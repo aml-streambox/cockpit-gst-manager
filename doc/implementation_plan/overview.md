@@ -170,8 +170,10 @@ Target: <1GB for management (GStreamer pipelines excluded)
 - [ai_tools.md](./ai_tools.md) - AI tool definitions (7 tools)
 - [ai_framework_investigation.md](./ai_framework_investigation.md) - Framework comparison
 - [gstreamer_knowledge_base.md](./gstreamer_knowledge_base.md) - AI system prompt content
+- [hardware_reference.md](./hardware_reference.md) - VDIN, encoders, audio details
+- [dependencies.md](./dependencies.md) - Python and Yocto dependencies
 - [localization.md](./localization.md) - EN + Chinese translations
 - [error_recovery.md](./error_recovery.md) - Recovery strategy
 - [hdmi_detection.md](./hdmi_detection.md) - HDMI signal monitoring
 - [testing.md](./testing.md) - Testing strategy
-
+- [operations.md](./operations.md) - Debugging and diagnostics

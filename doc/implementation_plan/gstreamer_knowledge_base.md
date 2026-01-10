@@ -248,7 +248,6 @@ Always check storage availability with `check_storage` tool before suggesting fi
 ### Debug Tips
 - Use GST_DEBUG=2 for basic debugging
 - Use gst-launch-1.0 -v for verbose output
-```
 
 ---
 
@@ -264,3 +263,7 @@ Do NOT include:
 - Explanations unrelated to the pipeline
 - General programming advice
 ```
+
+> [!NOTE]
+> The entire content above within the code block (from "You are a specialized..." to "Do NOT include...") is the system prompt template sent to the AI agent. It should be loaded from this file and injected as the system message when calling the LLM API.
+

@@ -1,0 +1,31 @@
+[Unit]
+Description=GStreamer Pipeline Manager Daemon
+After=network.target cockpit.socket
+Wants=cockpit.socket
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /usr/lib/gst-manager/main.py
+Restart=on-failure
+RestartSec=5
+
+# Run as root for device access
+User=root
+Group=root
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=gst-manager
+
+# Environment
+Environment="GST_DEBUG=2"
+Environment="PYTHONUNBUFFERED=1"
+
+# Security hardening (optional, adjust as needed)
+# ProtectSystem=strict
+# ProtectHome=true
+# ReadWritePaths=/var/lib/gst-manager
+
+[Install]
+WantedBy=multi-user.target

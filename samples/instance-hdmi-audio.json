@@ -1,0 +1,11 @@
+{
+    "id": "hdmi-srt-audio",
+    "name": "HDMI to SRT with Audio",
+    "pipeline": "v4l2src device=/dev/vdin1 ! video/x-raw,format=NV12,width=1920,height=1080,framerate=60/1 ! queue ! aml_h264enc bitrate=20000000 profile=high ! h264parse ! mux. alsasrc device=hw:0,0 ! audio/x-raw,rate=48000,channels=2 ! queue ! audioconvert ! faac bitrate=128000 ! aacparse ! mux. mpegtsmux name=mux ! srtsink uri=\"srt://0.0.0.0:5000?mode=listener\"",
+    "autostart": false,
+    "trigger_event": null,
+    "recording": {
+        "enabled": false,
+        "location": "/mnt/sdcard/recordings/"
+    }
+}

@@ -176,10 +176,18 @@ Before implementing a feature, read:
 - `doc/implementation_plan/overview.md` - Architecture
 - `doc/implementation_plan/api.md` - D-Bus API
 - `doc/implementation_plan/guidelines.md` - Coding standards
+- `doc/implementation_plan/hardware_reference.md` - VDIN, encoders, audio
 
 For AI-related code:
 - `doc/implementation_plan/ai_tools.md` - Tool definitions
 - `doc/implementation_plan/gstreamer_knowledge_base.md` - System prompt
+
+For operations:
+- `doc/implementation_plan/operations.md` - Debugging, logs, diagnostics
+- `doc/implementation_plan/error_recovery.md` - Recovery strategy
+
+Sample configs in `samples/` directory.
+
 
 ---
 

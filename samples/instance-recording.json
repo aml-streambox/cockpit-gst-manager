@@ -1,0 +1,11 @@
+{
+    "id": "local-recording",
+    "name": "HDMI Local Recording",
+    "pipeline": "v4l2src device=/dev/vdin1 ! video/x-raw,format=NV12 ! queue ! aml_h264enc bitrate=30000000 profile=high ! h264parse ! splitmuxsink location=/mnt/sdcard/recordings/rec%05d.ts max-size-time=60000000000 muxer=mpegtsmux",
+    "autostart": true,
+    "trigger_event": "hdmi_signal_ready",
+    "recording": {
+        "enabled": true,
+        "location": "/mnt/sdcard/recordings/"
+    }
+}

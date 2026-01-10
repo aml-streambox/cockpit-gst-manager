@@ -1,0 +1,18 @@
+{
+    "ai_providers": [
+        {
+            "name": "GLM",
+            "url": "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+            "api_key": "YOUR_API_KEY_HERE",
+            "model": "glm-4"
+        }
+    ],
+    "active_provider": "GLM",
+    "settings": {
+        "ai_max_retries": 3,
+        "ai_timeout_seconds": 30,
+        "poll_interval_seconds": 5,
+        "history_max_files": 100
+    },
+    "proxy": null
+}
