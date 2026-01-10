@@ -1,0 +1,1 @@
+# cockpit-gst-manager
