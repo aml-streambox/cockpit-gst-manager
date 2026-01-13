@@ -126,6 +126,9 @@ class GstManagerDaemon:
 
         logger.info("Event monitoring started")
 
+        # Auto-start instances with "boot" trigger
+        await self._start_boot_instances()
+
         # Initialize AI agent
         try:
             from ai.providers import ProviderManager
@@ -148,6 +151,27 @@ class GstManagerDaemon:
         # Keep running until stopped
         while self.running:
             await asyncio.sleep(1)
+
+    async def _start_boot_instances(self) -> None:
+        """Auto-start instances configured with 'boot' trigger."""
+        boot_instances = [
+            instance for instance in self.instance_manager.instances.values()
+            if instance.autostart and instance.trigger_event == "boot"
+        ]
+
+        if not boot_instances:
+            logger.debug("No boot-trigger instances to start")
+            return
+
+        logger.info(f"Starting {len(boot_instances)} boot-trigger instance(s)")
+
+        for instance in boot_instances:
+            if instance.status.value == "stopped":
+                try:
+                    logger.info(f"Auto-starting boot instance: {instance.id}")
+                    await self.instance_manager.start_instance(instance.id)
+                except Exception as e:
+                    logger.error(f"Failed to auto-start {instance.id}: {e}")
 
     async def stop(self) -> None:
         """Stop the daemon gracefully."""

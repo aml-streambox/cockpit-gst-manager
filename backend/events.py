@@ -282,43 +282,77 @@ class HdmiMonitor:
         return status
 
     def _get_status_v4l2(self) -> HdmiStatus:
-        """Fallback: Get status via v4l2-ctl command."""
-        status = HdmiStatus()
+        """Fallback: Get status via v4l2-ctl command on /dev/video71."""
+        status = HdmiStatus(source="v4l2")
 
-        # Check if vdin1 exists
-        if not Path("/dev/vdin1").exists():
-            return status
+        # Check HDMI cable connection via /dev/hdmirx0
+        if Path("/dev/hdmirx0").exists():
+            try:
+                # Read 5V/HPD status
+                with open("/dev/hdmirx0", "rb") as f:
+                    import struct
+                    hdmi_status = struct.unpack("i", f.read(4))[0]
+                    status.cable_connected = (hdmi_status & 0x01) != 0  # Port A
+                    status.available = True
+            except Exception as e:
+                logger.debug(f"Failed to read /dev/hdmirx0: {e}")
 
-        status.available = True
+        # Try different V4L2 devices for signal info
+        v4l2_devices = ["/dev/video71", "/dev/video0", "/dev/vdin0"]
+        
+        for device in v4l2_devices:
+            if not Path(device).exists():
+                continue
+                
+            status.available = True
+            
+            try:
+                import subprocess
+                result = subprocess.run(
+                    ["v4l2-ctl", "-d", device, "--query-dv-timings"],
+                    capture_output=True,
+                    text=True,
+                    timeout=2
+                )
 
-        try:
-            import subprocess
-            result = subprocess.run(
-                ["v4l2-ctl", "-d", "/dev/vdin1", "--query-dv-timings"],
-                capture_output=True,
-                text=True,
-                timeout=2
-            )
+                if result.returncode == 0 and result.stdout:
+                    status.cable_connected = True
+                    status.signal_locked = True
+                    status.raw_info = result.stdout
 
-            if result.returncode == 0 and result.stdout:
-                status.cable_connected = True
-                status.signal_locked = True
-                status.raw_info = result.stdout
+                    # Parse width/height from v4l2-ctl output
+                    # Format: "Active width: 1920" or "Width: 1920"
+                    width_match = re.search(r"(?:Active\s+)?[Ww]idth:\s*(\d+)", result.stdout)
+                    height_match = re.search(r"(?:Active\s+)?[Hh]eight:\s*(\d+)", result.stdout)
+                    fps_match = re.search(r"(\d+(?:\.\d+)?)\s*fps", result.stdout)
+                    # Also try: "Pixelclock: 148500000 Hz (1920x1080p59.94)"
+                    res_match = re.search(r"\((\d+)x(\d+)([pi])(\d+(?:\.\d+)?)\)", result.stdout)
 
-                # Parse width/height
-                width_match = re.search(r"Width:\s*(\d+)", result.stdout)
-                height_match = re.search(r"Height:\s*(\d+)", result.stdout)
-                fps_match = re.search(r"(\d+(?:\.\d+)?)\s*fps", result.stdout)
+                    if width_match:
+                        status.width = int(width_match.group(1))
+                    if height_match:
+                        status.height = int(height_match.group(1))
+                    if fps_match:
+                        status.fps = int(float(fps_match.group(1)))
+                    
+                    # Use the parenthetical format if direct matches failed
+                    if res_match and (status.width == 0 or status.height == 0):
+                        status.width = int(res_match.group(1))
+                        status.height = int(res_match.group(2))
+                        status.interlaced = res_match.group(3) == 'i'
+                        status.fps = int(float(res_match.group(4)))
 
-                if width_match:
-                    status.width = int(width_match.group(1))
-                if height_match:
-                    status.height = int(height_match.group(1))
-                if fps_match:
-                    status.fps = int(float(fps_match.group(1)))
-
-        except Exception as e:
-            logger.debug(f"v4l2-ctl fallback failed: {e}")
+                    if status.width > 0:
+                        logger.debug(f"v4l2-ctl on {device}: {status.width}x{status.height}@{status.fps}")
+                        break  # Found working device
+                        
+            except subprocess.TimeoutExpired:
+                logger.debug(f"v4l2-ctl timeout on {device}")
+            except FileNotFoundError:
+                logger.debug("v4l2-ctl not found")
+                break
+            except Exception as e:
+                logger.debug(f"v4l2-ctl failed on {device}: {e}")
 
         return status
 
