@@ -1,7 +1,7 @@
 [Unit]
 Description=GStreamer Pipeline Manager Daemon
-# Start very late after all core services and hardware are ready
-After=network.target cockpit.socket multi-user.target sound.target
+# Start very late after all core services, hardware, and streambox-tv are ready
+After=network.target cockpit.socket multi-user.target sound.target streambox-tv.service
 Wants=cockpit.socket
 
 [Service]

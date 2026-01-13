@@ -1,17 +1,27 @@
 """Event Monitoring - HDMI signal detection and event triggers.
 
-Monitors HDMI input signal via sysfs and triggers pipeline events.
+Monitors HDMI input signal via tvservice or sysfs and triggers pipeline events.
+Prefers tvservice integration when libtvclient.so is available.
 """
 
 import asyncio
 import logging
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Callable, Any, Dict
 
 logger = logging.getLogger("gst-manager.events")
+
+# Try to import tvservice module for native integration
+try:
+    from . import tvservice
+    TVSERVICE_AVAILABLE = True
+    logger.info("TvService module available")
+except ImportError:
+    TVSERVICE_AVAILABLE = False
+    logger.debug("TvService module not available, using fallback")
 
 
 # Sysfs paths for HDMI RX
@@ -34,7 +44,13 @@ class HdmiStatus:
     fps: int = 0
     interlaced: bool = False
     color_format: str = ""
+    color_depth: int = 8
     raw_info: str = ""
+    # Extended info from tvservice
+    allm_mode: int = 0
+    vrr_mode: int = 0
+    hdr_info: int = 0
+    source: str = "unknown"  # polling, tvservice, sysfs, v4l2
 
     @property
     def resolution(self) -> str:
@@ -55,7 +71,11 @@ class HdmiStatus:
             "fps": self.fps,
             "interlaced": self.interlaced,
             "resolution": self.resolution,
-            "color_format": self.color_format
+            "color_format": self.color_format,
+            "color_depth": self.color_depth,
+            "allm_mode": self.allm_mode,
+            "vrr_mode": self.vrr_mode,
+            "source": self.source
         }
 
 
@@ -154,23 +174,77 @@ class HdmiMonitor:
         self.running = False
         self.last_status: Optional[HdmiStatus] = None
         self._task: Optional[asyncio.Task] = None
+        self._tvservice_client: Optional[Any] = None
 
     def get_status(self) -> HdmiStatus:
-        """Read current HDMI status from sysfs.
+        """Read current HDMI status.
+
+        Tries sources in order:
+        1. TvService (native library) - best quality, instant events
+        2. Sysfs paths - direct kernel interface
+        3. V4L2-ctl command - fallback subprocess call
 
         Returns:
             HdmiStatus with current state.
         """
-        status = HdmiStatus()
+        # Try tvservice first (best source)
+        if TVSERVICE_AVAILABLE:
+            status = self._get_status_tvservice()
+            if status.available:
+                return status
 
-        # Find sysfs path if not already found
+        # Try sysfs paths
         if self.sysfs_path is None:
             self.sysfs_path = find_hdmirx_sysfs()
 
-        if self.sysfs_path is None:
-            # Try v4l2-ctl fallback
-            return self._get_status_v4l2()
+        if self.sysfs_path is not None:
+            status = self._get_status_sysfs()
+            if status.available:
+                return status
 
+        # Fallback to v4l2-ctl
+        return self._get_status_v4l2()
+
+    def _get_status_tvservice(self) -> HdmiStatus:
+        """Get status from tvservice library."""
+        status = HdmiStatus(source="tvservice")
+
+        try:
+            # Lazy init tvservice client
+            if self._tvservice_client is None:
+                self._tvservice_client = tvservice.TvClientLib()
+                if not self._tvservice_client.connect():
+                    self._tvservice_client = None
+                    return status
+
+            if not self._tvservice_client.available:
+                return status
+
+            # Get signal info from tvservice
+            info = self._tvservice_client.get_signal_info(tvservice.TvSourceInput.SOURCE_HDMI1)
+            
+            status.available = True
+            status.width = info.width
+            status.height = info.height
+            status.fps = info.fps
+            status.color_depth = info.color_depth
+            status.signal_locked = info.is_stable
+            status.cable_connected = status.signal_locked or info.status != tvservice.TvinSigStatus.TVIN_SIG_STATUS_NOSIG
+            status.allm_mode = info.allm_mode
+            status.vrr_mode = info.vrr_mode
+            status.hdr_info = info.hdr_info
+
+            logger.debug(f"TvService status: {status.resolution}, allm={status.allm_mode}, vrr={status.vrr_mode}")
+
+        except Exception as e:
+            logger.warning(f"TvService get_status failed: {e}")
+            status.available = False
+
+        return status
+
+    def _get_status_sysfs(self) -> HdmiStatus:
+        """Get status from sysfs paths."""
+        status = HdmiStatus(source="sysfs")
         status.available = True
 
         # Read cable status
