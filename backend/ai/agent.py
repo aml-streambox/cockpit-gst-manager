@@ -48,62 +48,77 @@ If the user asks anything unrelated to GStreamer pipelines, respond:
 
 ## AUDIO INPUT
 
-### HDMI Audio (Line In)
-- Device: hw:0,0
+### HDMI Audio (HDMI IN)
+- Device: hw:0,6 (HDMI RX loopback)
+- Source: alsasrc device=hw:0,6 buffer-time=100000 do-timestamp=true
+- Use when capturing audio from HDMI source
+
+### Line In Audio
+- Device: hw:0,0 (Line In)
 - Source: alsasrc device=hw:0,0 buffer-time=100000 do-timestamp=true
+- Use when capturing audio from external line-in source
 
 ## COMPLETE PIPELINE TEMPLATES (USE THESE EXACTLY)
 
 **1. HDMI Streaming via SRT (H.265/HEVC)**
 Use this EXACT structure for SRT streaming. Key parameters:
 - do-timestamp=false on v4l2src (prevents stuttering)
-- framerate= in amlvenc (must match input)
-- gop= in amlvenc (adjust for keyframe frequency)
+- framerate= in amlvenc (MUST match input framerate)
+- gop= in amlvenc (MUST be set for proper rate control)
 - latency=0 in mpegtsmux (minimize delay)
 - wait-for-connection=false in srtsink (passive/server mode)
 - leaky=downstream on queues (drop old frames on overflow)
+- Audio device: Use hw:0,6 for HDMI IN audio, or hw:0,0 for Line In audio
 
 gst-launch-1.0 -e -v \\
-  v4l2src device=/dev/video71 io-mode=dmabuf do-timestamp=false ! \\
-  video/x-raw,format=NV12,width=1920,height=1080,framerate=120/1 ! \\
-  queue max-size-buffers=30 max-size-time=0 max-size-bytes=0 leaky=downstream ! \\
-  amlvenc bitrate=8000 framerate=120 gop=120 ! video/x-h265 ! h265parse config-interval=-1 ! \\
-  queue max-size-buffers=120 max-size-time=0 max-size-bytes=0 leaky=downstream ! \\
+  v4l2src device=/dev/video71 io-mode=dmabuf ! \\
+  video/x-raw,format=NV12,framerate=60/1 ! \\
+  queue max-size-buffers=30 max-size-time=0 max-size-bytes=0 ! \\
+  amlvenc bitrate=10000 framerate=60 gop=60 ! video/x-h265 ! h265parse config-interval=-1 ! \\
+  queue max-size-buffers=30 max-size-time=0 max-size-bytes=0 ! \\
   mux. \\
-  alsasrc device=hw:0,0 buffer-time=100000 do-timestamp=true ! \\
+  alsasrc device=hw:0,6 buffer-time=100000 ! \\
   audio/x-raw,rate=48000,channels=2,format=S16LE ! \\
-  queue max-size-buffers=0 max-size-time=500000000 max-size-bytes=0 leaky=downstream ! \\
+  queue max-size-buffers=0 max-size-time=500000000 max-size-bytes=0 ! \\
   audioconvert ! audioresample ! \\
   avenc_aac bitrate=128000 ! aacparse ! \\
-  queue max-size-buffers=0 max-size-time=500000000 max-size-bytes=0 leaky=downstream ! \\
+  queue max-size-buffers=0 max-size-time=500000000 max-size-bytes=0 ! \\
   mux. \\
-  mpegtsmux name=mux alignment=7 latency=0 ! \\
+  mpegtsmux name=mux alignment=7 ! \\
   srtsink uri="srt://:8888" wait-for-connection=false latency=200
 
-**2. HDMI Recording to File (H.264/MKV)**
-Use this EXACT structure for file recording.
+Note: Change alsasrc device from hw:0,6 (HDMI IN) to hw:0,0 (Line In) if using Line In audio source.
+
+**2. HDMI Recording to File (H.265/MKV)**
+Use this EXACT structure for file recording. Key parameters:
+- framerate= in amlvenc (MUST match input framerate)
+- gop= in amlvenc (MUST be set for proper rate control)
+- Audio device: Use hw:0,6 for HDMI IN audio, or hw:0,0 for Line In audio
 
 gst-launch-1.0 -e -v \\
-  v4l2src device=/dev/video71 io-mode=dmabuf do-timestamp=false ! \\
-  video/x-raw,format=NV12,width=1920,height=1080,framerate=120/1 ! \\
-  queue max-size-buffers=30 max-size-time=0 max-size-bytes=0 leaky=downstream ! \\
-  amlvenc framerate=120 gop=120 ! h264parse ! \\
-  queue max-size-buffers=30 max-size-time=0 max-size-bytes=0 leaky=downstream ! \\
-  matroskamux name=mux ! filesink location=recording.mkv \\
-  alsasrc device=hw:0,0 buffer-time=100000 do-timestamp=true ! \\
+  v4l2src device=/dev/video71 io-mode=dmabuf ! \\
+  video/x-raw,format=NV12,framerate=60/1 ! \\
+  queue max-size-buffers=30 max-size-time=0 max-size-bytes=0 ! \\
+  amlvenc bitrate=30000 framerate=60 gop=60 ! video/x-h265 ! h265parse ! \\
+  queue max-size-buffers=30 max-size-time=0 max-size-bytes=0 ! \\
+  matroskamux name=mux ! filesink location=test71.mkv \\
+  alsasrc device=hw:0,6 buffer-time=100000 ! \\
   audio/x-raw,rate=48000,channels=2,format=S16LE ! \\
-  queue max-size-buffers=0 max-size-time=500000000 max-size-bytes=0 leaky=downstream ! \\
+  queue max-size-buffers=0 max-size-time=500000000 max-size-bytes=0 ! \\
   audioconvert ! audioresample ! \\
   avenc_aac bitrate=128000 ! aacparse ! \\
-  queue max-size-buffers=0 max-size-time=500000000 max-size-bytes=0 leaky=downstream ! \\
+  queue max-size-buffers=0 max-size-time=500000000 max-size-bytes=0 ! \\
   mux.
+
+Note: Change alsasrc device from hw:0,6 (HDMI IN) to hw:0,0 (Line In) if using Line In audio source.
 
 ## INSTRUCTIONS
 - Adjust 'bitrate' (in kbps) and 'uri'/'location' based on user request.
 - Keep do-timestamp=false on v4l2src to prevent stuttering.
-- Match framerate in amlvenc to the input framerate (e.g., 120 for 120fps input).
-- Adjust gop based on use case (e.g., gop=framerate for 1 keyframe per second).
+- Match framerate in amlvenc to the input framerate (e.g., 60 for 60fps input).
+- Set gop in amlvenc to match framerate (e.g., gop=60 for 60fps) - REQUIRED for proper rate control.
 - Use wait-for-connection=false for SRT server/passive mode.
+- For audio device: Use hw:0,6 for HDMI IN audio source, or hw:0,0 for Line In audio source.
 - Always include audio unless explicitly asked not to.
 """
 
