@@ -58,11 +58,6 @@ def sample_instance():
             "max_retries": 3,
             "retry_delay_seconds": 5
         },
-        "recording": {
-            "enabled": False,
-            "location": "/mnt/sdcard/",
-            "max_segment_time": 60
-        },
         "created_at": "2026-01-10T00:00:00Z",
         "modified_at": "2026-01-10T00:00:00Z"
     }

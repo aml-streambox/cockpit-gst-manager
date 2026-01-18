@@ -35,14 +35,6 @@ class RecoveryConfig:
 
 
 @dataclass
-class RecordingConfig:
-    """Recording configuration for an instance."""
-    enabled: bool = False
-    location: str = "/mnt/sdcard/recordings/"
-    max_segment_time: int = 60
-
-
-@dataclass
 class Instance:
     """GStreamer pipeline instance."""
     id: str
@@ -53,13 +45,11 @@ class Instance:
     autostart: bool = False
     trigger_event: Optional[str] = None
     recovery: RecoveryConfig = field(default_factory=RecoveryConfig)
-    recording: RecordingConfig = field(default_factory=RecordingConfig)
     created_at: str = ""
     modified_at: str = ""
     error_message: Optional[str] = None
     retry_count: int = 0
     uptime_start: Optional[float] = None
-    recording_active: bool = False
     error_logs: List[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
@@ -74,8 +64,6 @@ class Instance:
         # Handle nested configs
         if "recovery" in data and isinstance(data["recovery"], dict):
             data["recovery"] = RecoveryConfig(**data["recovery"])
-        if "recording" in data and isinstance(data["recording"], dict):
-            data["recording"] = RecordingConfig(**data["recording"])
         # Handle status enum
         if "status" in data and isinstance(data["status"], str):
             data["status"] = InstanceStatus(data["status"])
@@ -297,7 +285,6 @@ class InstanceManager:
             if exit_code == 0:
                 logger.info(f"Instance {instance_id} completed normally")
                 instance.status = InstanceStatus.STOPPED
-                instance.recording_active = False
                 await self._notify_status_change(instance_id, "stopped")
             else:
                 error_msg = stderr.decode(errors="replace") if stderr else f"Exit code: {exit_code}"
@@ -415,11 +402,6 @@ class InstanceManager:
             "status": instance.status.value,
             "pid": instance.pid,
             "uptime": uptime,
-            "recording": instance.recording_active,
-            "recording_config": {
-                "enabled": instance.recording.enabled,
-                "location": instance.recording.location
-            },
             "error": instance.error_message,
             "retry_count": instance.retry_count,
             "has_logs": len(instance.error_logs) > 0
@@ -446,45 +428,6 @@ class InstanceManager:
         instance.modified_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         await self.history_manager.save_instance(instance.to_dict())
         logger.info(f"Updated pipeline for instance: {instance_id}")
-
-        return True
-
-    async def toggle_recording(
-        self,
-        instance_id: str,
-        enable: bool,
-        location: Optional[str] = None
-    ) -> bool:
-        """Toggle recording on a running pipeline.
-
-        Note: This is a simplified implementation. Full dynamic recording
-        would require pipeline modifications with tee/valve elements.
-
-        Args:
-            instance_id: Instance ID.
-            enable: Whether to enable recording.
-            location: Optional storage path.
-
-        Returns:
-            bool: Success status.
-        """
-        instance = self.instances.get(instance_id)
-        if not instance:
-            raise ValueError(f"Instance not found: {instance_id}")
-
-        if instance.status != InstanceStatus.RUNNING:
-            raise ValueError(f"Instance not running: {instance_id}")
-
-        # Update recording state
-        instance.recording_active = enable
-        if location:
-            instance.recording.location = location
-
-        logger.info(f"Recording {'enabled' if enable else 'disabled'} for {instance_id}")
-
-        # Note: Full implementation would send signals to GStreamer pipeline
-        # to dynamically enable/disable recording via valve elements.
-        # For now, this just tracks the intended state.
 
         return True
 

@@ -48,7 +48,7 @@ If the user asks anything unrelated to GStreamer pipelines, respond:
 
 ## AUDIO INPUT
 
-### HDMI Audio (HDMI IN)
+### HDMI Audio (HDMI RX loopback)
 - Device: hw:0,6 (HDMI RX loopback)
 - Source: alsasrc device=hw:0,6 buffer-time=100000 do-timestamp=true
 - Use when capturing audio from HDMI source
@@ -62,19 +62,16 @@ If the user asks anything unrelated to GStreamer pipelines, respond:
 
 **1. HDMI Streaming via SRT (H.265/HEVC)**
 Use this EXACT structure for SRT streaming. Key parameters:
-- do-timestamp=false on v4l2src (prevents stuttering)
 - framerate= in amlvenc (MUST match input framerate)
 - gop= in amlvenc (MUST be set for proper rate control)
-- latency=0 in mpegtsmux (minimize delay)
 - wait-for-connection=false in srtsink (passive/server mode)
-- leaky=downstream on queues (drop old frames on overflow)
-- Audio device: Use hw:0,6 for HDMI IN audio, or hw:0,0 for Line In audio
+- Audio device: Use hw:0,6 for HDMI RX loopback audio, or hw:0,0 for Line In audio
 
 gst-launch-1.0 -e -v \\
   v4l2src device=/dev/video71 io-mode=dmabuf ! \\
   video/x-raw,format=NV12,framerate=60/1 ! \\
   queue max-size-buffers=30 max-size-time=0 max-size-bytes=0 ! \\
-  amlvenc bitrate=10000 framerate=60 gop=60 ! video/x-h265 ! h265parse config-interval=-1 ! \\
+  amlvenc bitrate=30000 framerate=60 gop=60 ! video/x-h265 ! h265parse config-interval=-1 ! \\
   queue max-size-buffers=30 max-size-time=0 max-size-bytes=0 ! \\
   mux. \\
   alsasrc device=hw:0,6 buffer-time=100000 ! \\
@@ -87,13 +84,13 @@ gst-launch-1.0 -e -v \\
   mpegtsmux name=mux alignment=7 ! \\
   srtsink uri="srt://:8888" wait-for-connection=false latency=200
 
-Note: Change alsasrc device from hw:0,6 (HDMI IN) to hw:0,0 (Line In) if using Line In audio source.
+Note: Change alsasrc device from hw:0,6 (HDMI RX loopback) to hw:0,0 (Line In) if using Line In audio source.
 
 **2. HDMI Recording to File (H.265/MKV)**
 Use this EXACT structure for file recording. Key parameters:
 - framerate= in amlvenc (MUST match input framerate)
 - gop= in amlvenc (MUST be set for proper rate control)
-- Audio device: Use hw:0,6 for HDMI IN audio, or hw:0,0 for Line In audio
+- Audio device: Use hw:0,6 for HDMI RX loopback audio, or hw:0,0 for Line In audio
 
 gst-launch-1.0 -e -v \\
   v4l2src device=/dev/video71 io-mode=dmabuf ! \\
@@ -110,15 +107,14 @@ gst-launch-1.0 -e -v \\
   queue max-size-buffers=0 max-size-time=500000000 max-size-bytes=0 ! \\
   mux.
 
-Note: Change alsasrc device from hw:0,6 (HDMI IN) to hw:0,0 (Line In) if using Line In audio source.
+Note: Change alsasrc device from hw:0,6 (HDMI RX loopback) to hw:0,0 (Line In) if using Line In audio source.
 
 ## INSTRUCTIONS
 - Adjust 'bitrate' (in kbps) and 'uri'/'location' based on user request.
-- Keep do-timestamp=false on v4l2src to prevent stuttering.
 - Match framerate in amlvenc to the input framerate (e.g., 60 for 60fps input).
 - Set gop in amlvenc to match framerate (e.g., gop=60 for 60fps) - REQUIRED for proper rate control.
 - Use wait-for-connection=false for SRT server/passive mode.
-- For audio device: Use hw:0,6 for HDMI IN audio source, or hw:0,0 for Line In audio source.
+- For audio device: Use hw:0,6 for HDMI RX loopback audio, or hw:0,0 for Line In audio source.
 - Always include audio unless explicitly asked not to.
 """
 

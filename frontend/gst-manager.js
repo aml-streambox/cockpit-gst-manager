@@ -61,7 +61,6 @@ function setupEventHandlers() {
     document.getElementById("btn-close-detail").addEventListener("click", hideDetail);
     document.getElementById("btn-start-instance").addEventListener("click", startSelectedInstance);
     document.getElementById("btn-stop-instance").addEventListener("click", stopSelectedInstance);
-    document.getElementById("btn-record-instance").addEventListener("click", toggleRecording);
     document.getElementById("btn-edit-instance").addEventListener("click", editSelectedInstance);
     document.getElementById("btn-delete-instance").addEventListener("click", deleteSelectedInstance);
     document.getElementById("btn-clear-logs").addEventListener("click", clearLogs);
@@ -284,29 +283,15 @@ function updateDetailView() {
     const isRunning = inst.status === "running";
     document.getElementById("btn-start-instance").disabled = isRunning;
     document.getElementById("btn-stop-instance").disabled = !isRunning;
-    document.getElementById("btn-record-instance").disabled = !isRunning;
     document.getElementById("btn-edit-instance").disabled = isRunning;
     document.getElementById("btn-delete-instance").disabled = isRunning;
 
-    // Update record button text based on state
-    const recordBtn = document.getElementById("btn-record-instance");
-    if (inst.recording_active) {
-        recordBtn.textContent = "Stop Rec";
-        recordBtn.classList.remove("gst-btn-danger");
-        recordBtn.classList.add("gst-btn-warning");
-    } else {
-        recordBtn.textContent = "Record";
-        recordBtn.classList.remove("gst-btn-warning");
-        recordBtn.classList.add("gst-btn-danger");
-    }
-
-    // Fetch uptime and recording status
+    // Fetch uptime
     if (isRunning) {
         callMethod("GetInstanceStatus", inst.id).then(result => {
             const status = JSON.parse(result);
             document.getElementById("detail-uptime").textContent =
                 status.uptime ? formatUptime(status.uptime) : "-";
-            inst.recording_active = status.recording;
 
             // Show logs if available
             if (status.has_logs) {
@@ -433,23 +418,6 @@ async function deleteSelectedInstance() {
     } catch (error) {
         console.error("Failed to delete instance:", error);
         showToast("Failed to delete: " + error.message, "error");
-    }
-}
-
-async function toggleRecording() {
-    if (!state.selectedInstance) return;
-
-    const isRecording = state.selectedInstance.recording_active;
-    const newState = !isRecording;
-
-    try {
-        await callMethod("ToggleRecording", state.selectedInstance.id, newState, "");
-        state.selectedInstance.recording_active = newState;
-        showToast(newState ? "Recording started" : "Recording stopped", "success");
-        updateDetailView();
-    } catch (error) {
-        console.error("Failed to toggle recording:", error);
-        showToast("Failed to toggle recording: " + error.message, "error");
     }
 }
 

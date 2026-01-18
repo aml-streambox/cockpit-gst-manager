@@ -166,25 +166,6 @@ if DBUS_LIBRARY == "dbus_next":
         # --- Dynamic Control Methods ---
 
         @method()
-        async def ToggleRecording(
-            self,
-            instance_id: "s",
-            enable: "b",
-            location: "s"
-        ) -> "b":
-            """Enable/disable recording on a running pipeline."""
-            try:
-                return await self.instance_manager.toggle_recording(
-                    instance_id, enable, location if location else None
-                )
-            except ValueError as e:
-                if "not found" in str(e).lower():
-                    raise DBusError(f"{INTERFACE_NAME}.InstanceNotFound", str(e))
-                elif "not running" in str(e).lower():
-                    raise DBusError(f"{INTERFACE_NAME}.InstanceStopped", str(e))
-                raise DBusError(f"{INTERFACE_NAME}.Error", str(e))
-
-        @method()
         def GetInstanceLogs(self, instance_id: "s", lines: "i") -> "s":
             """Get error logs for an instance as JSON array."""
             try:
