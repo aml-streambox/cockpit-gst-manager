@@ -113,6 +113,7 @@ class InstanceManager:
         self.instances: Dict[str, Instance] = {}
         self.processes: Dict[str, asyncio.subprocess.Process] = {}
         self.status_callbacks: List[Callable] = []
+        self._stopping_instances: set = set()  # Track intentional stops
 
     async def load_instances(self) -> None:
         """Load saved instances from history."""
@@ -301,6 +302,12 @@ class InstanceManager:
                 logger.info(f"Instance {instance_id} completed normally")
                 instance.status = InstanceStatus.STOPPED
                 await self._notify_status_change(instance_id, "stopped")
+            elif instance_id in self._stopping_instances:
+                # Intentional stop via stop_instance() - don't treat as error
+                logger.info(f"Instance {instance_id} stopped intentionally (exit code {exit_code})")
+                instance.status = InstanceStatus.STOPPED
+                self._stopping_instances.discard(instance_id)
+                await self._notify_status_change(instance_id, "stopped")
             else:
                 error_msg = stderr.decode(errors="replace") if stderr else f"Exit code: {exit_code}"
                 logger.error(f"Instance {instance_id} failed: {error_msg[:200]}")
@@ -319,6 +326,16 @@ class InstanceManager:
         """Handle pipeline error with recovery logic."""
         instance = self.instances.get(instance_id)
         if not instance:
+            return
+
+        # Auto instances should NOT auto-recover here — they restart
+        # through on_passthrough_ready() when HDMI comes back.
+        # Auto-recovery would waste retries while the signal is still gone.
+        if instance.instance_type == InstanceType.AUTO:
+            logger.info(f"Auto instance {instance_id} failed (will restart on signal): {error[:200]}")
+            instance.status = InstanceStatus.ERROR
+            instance.error_message = error
+            await self._notify_status_change(instance_id, "error")
             return
 
         # Check if transient error
@@ -359,6 +376,7 @@ class InstanceManager:
             return True
 
         instance.status = InstanceStatus.STOPPING
+        self._stopping_instances.add(instance_id)  # Mark as intentional stop
         await self._notify_status_change(instance_id, "stopping")
 
         # Import signal module (add to top of file if missing, but we can access via signal.SIGINT)
@@ -382,6 +400,7 @@ class InstanceManager:
         instance.status = InstanceStatus.STOPPED
         instance.pid = None
         instance.uptime_start = None
+        self._stopping_instances.discard(instance_id)  # Clear intentional stop flag
         await self._notify_status_change(instance_id, "stopped")
         logger.info(f"Stopped instance: {instance_id}")
 

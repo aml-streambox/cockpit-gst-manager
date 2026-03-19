@@ -396,11 +396,16 @@ class AutoInstanceManager:
             logger.info("Auto-start: source is not HDR, falling back to SDR pipeline")
             self.config.use_hdr = False
         
-        # If instance exists and is stopped, recreate with new pipeline
+        # If instance exists and is not running, recreate with new pipeline
         if self.instance_id:
             instance = self.instance_manager.get_instance(self.instance_id)
-            if instance and instance.status.value == "stopped":
-                logger.info("Recreating auto instance with updated resolution")
+            if instance and instance.status.value in ("stopped", "error"):
+                logger.info(f"Recreating auto instance (was {instance.status.value}) with updated resolution")
+                await self.create_or_update(self.config, hdmi_tx_status)
+            elif not instance:
+                # Instance was deleted externally
+                logger.info("Auto instance was deleted, creating new one")
+                self.instance_id = None
                 await self.create_or_update(self.config, hdmi_tx_status)
         else:
             # Create new instance
@@ -416,6 +421,17 @@ class AutoInstanceManager:
         # Start the instance
         if self.instance_id:
             try:
+                # Wait for vdin1/VPP writeback to fully stabilize after HDMI reconnect.
+                # The TX check delay (1.5s) may not be enough for the capture path.
+                await asyncio.sleep(2.0)
+                
+                # Verify passthrough is still valid (signal didn't drop again)
+                if self.event_manager:
+                    state = self.event_manager.get_passthrough_state()
+                    if not state.get("can_capture"):
+                        logger.warning("Passthrough lost during stabilization delay, aborting start")
+                        return
+                
                 await self.instance_manager.start_instance(self.instance_id)
                 logger.info(f"Auto-started instance {self.instance_id}")
             except Exception as e:
@@ -424,18 +440,35 @@ class AutoInstanceManager:
     async def on_passthrough_lost(self) -> None:
         """Called when HDMI passthrough is lost.
         
-        Stops the auto instance if it's running.
+        Stops the auto instance if it's running, and ensures it ends up
+        in 'stopped' state (not 'error') so it can be restarted later.
         """
         if not self.instance_id:
             return
         
         instance = self.instance_manager.get_instance(self.instance_id)
-        if instance and instance.status.value == "running":
+        if not instance:
+            return
+        
+        if instance.status.value == "running":
             try:
                 await self.instance_manager.stop_instance(self.instance_id)
                 logger.info(f"Auto-stopped instance {self.instance_id} due to passthrough loss")
             except Exception as e:
                 logger.error(f"Failed to auto-stop instance: {e}")
+        
+        # Ensure the instance is in 'stopped' state regardless.
+        # The gst-launch process may have already crashed with an error
+        # (e.g. v4l2src lost signal) before we got here, leaving the
+        # instance in 'error' state. Force it to 'stopped' so
+        # on_passthrough_ready() can restart it cleanly.
+        instance = self.instance_manager.get_instance(self.instance_id)
+        if instance and instance.status.value == "error":
+            logger.info(f"Clearing error state for instance {self.instance_id} (passthrough lost)")
+            from instances import InstanceStatus
+            instance.status = InstanceStatus.STOPPED
+            instance.error_message = None
+            instance.retry_count = 0
     
     def get_config(self) -> Optional[Dict[str, Any]]:
         """Get current config as dict.
