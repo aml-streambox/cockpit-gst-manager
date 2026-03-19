@@ -361,6 +361,10 @@ class InstanceManager:
     async def stop_instance(self, instance_id: str) -> bool:
         """Stop a running pipeline instance.
 
+        Uses a 3-stage shutdown: SIGINT (graceful EOS) -> SIGTERM -> SIGKILL.
+        The Wave521 kernel driver performs hardware reset on fd close (vpu_release),
+        so even after SIGKILL the encoder hardware is left in a clean state.
+
         Args:
             instance_id: Instance ID to stop.
 
@@ -379,21 +383,29 @@ class InstanceManager:
         self._stopping_instances.add(instance_id)  # Mark as intentional stop
         await self._notify_status_change(instance_id, "stopping")
 
-        # Import signal module (add to top of file if missing, but we can access via signal.SIGINT)
         import signal
 
         process = self.processes.get(instance_id)
         if process:
             try:
-                # Use SIGINT (CTRL+C) to allow gst-launch to handle EOS and cleanup drivers
+                # Stage 1: SIGINT — lets gst-launch send EOS and shut down cleanly
+                logger.info(f"Stopping instance {instance_id}: sending SIGINT (pid={process.pid})")
                 process.send_signal(signal.SIGINT)
                 try:
-                    # Give it 10 seconds to shutdown cleanly (hardware encoders can be slow)
-                    await asyncio.wait_for(process.wait(), timeout=10.0)
+                    await asyncio.wait_for(process.wait(), timeout=5.0)
                 except asyncio.TimeoutError:
-                    logger.warning(f"Force killing instance: {instance_id}")
-                    process.kill()
-                    await process.wait()
+                    # Stage 2: SIGTERM — stronger signal, GStreamer will attempt cleanup
+                    logger.warning(f"Instance {instance_id}: SIGINT timeout, sending SIGTERM")
+                    process.send_signal(signal.SIGTERM)
+                    try:
+                        await asyncio.wait_for(process.wait(), timeout=3.0)
+                    except asyncio.TimeoutError:
+                        # Stage 3: SIGKILL — force kill; kernel vpu_release() will
+                        # hw-reset the encoder on fd close, ensuring clean state
+                        logger.warning(f"Instance {instance_id}: SIGTERM timeout, sending SIGKILL "
+                                       "(kernel will hw-reset encoder on fd close)")
+                        process.kill()
+                        await process.wait()
             except ProcessLookupError:
                 pass  # Process already gone
 
