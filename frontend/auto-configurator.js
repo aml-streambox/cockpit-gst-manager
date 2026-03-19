@@ -55,7 +55,8 @@ class AutoConfigurator {
         const inputs = [
             'auto-gop-interval', 'auto-bitrate', 'auto-rc-mode',
             'auto-audio-source', 'auto-srt-port',
-            'auto-recording-enabled', 'auto-recording-path', 'auto-autostart'
+            'auto-recording-enabled', 'auto-recording-path', 'auto-autostart',
+            'auto-use-hdr'
         ];
         
         inputs.forEach(id => {
@@ -296,6 +297,11 @@ class AutoConfigurator {
             autostart.checked = this.config.autostart_on_ready;
         }
 
+        const useHdr = document.getElementById('auto-use-hdr');
+        if (useHdr) {
+            useHdr.checked = this.config.use_hdr !== false; // default true
+        }
+
         const pathGroup = document.getElementById('auto-recording-path-group');
         if (pathGroup) {
             pathGroup.style.display = this.config.recording_enabled ? 'block' : 'none';
@@ -321,7 +327,8 @@ class AutoConfigurator {
             srt_port: parseInt(getValue('auto-srt-port', '8888')),
             recording_enabled: getChecked('auto-recording-enabled'),
             recording_path: getValue('auto-recording-path', '/mnt/sdcard/recordings/capture.ts'),
-            autostart_on_ready: getChecked('auto-autostart')
+            autostart_on_ready: getChecked('auto-autostart'),
+            use_hdr: getChecked('auto-use-hdr')
         };
     }
 
@@ -335,7 +342,8 @@ class AutoConfigurator {
             
             const previewEl = document.getElementById('auto-pipeline-preview');
             if (previewEl) {
-                previewEl.textContent = result;
+                // Show full command with gst-launch-1.0 -e (automatically added by backend)
+                previewEl.textContent = 'gst-launch-1.0 -e ' + result;
             }
         } catch (error) {
             console.error('Failed to get preview:', error);
@@ -451,6 +459,44 @@ class AutoConfigurator {
             setText('auto-detected-res', `Detected: ${state.width}x${state.height}p${state.framerate || 60}`);
         } else {
             setText('auto-detected-res', 'Detected: -');
+        }
+
+        // HDR source detection
+        const hdrStatusEl = document.getElementById('auto-hdr-status');
+        const detectedHdrEl = document.getElementById('auto-detected-hdr');
+        const sourceIsHdr = state.source_is_hdr || (state.color_depth && state.color_depth >= 10);
+        const colorDepth = state.color_depth || 8;
+
+        if (detectedHdrEl) {
+            if (sourceIsHdr) {
+                detectedHdrEl.textContent = `HDR ${colorDepth}-bit`;
+                detectedHdrEl.className = 'gst-hdr-badge hdr-active';
+            } else if (state.rx_stable) {
+                detectedHdrEl.textContent = `SDR ${colorDepth}-bit`;
+                detectedHdrEl.className = 'gst-hdr-badge hdr-inactive';
+            } else {
+                detectedHdrEl.textContent = '';
+                detectedHdrEl.className = 'gst-hdr-badge';
+            }
+        }
+
+        if (hdrStatusEl) {
+            const useHdrChecked = document.getElementById('auto-use-hdr');
+            const hdrEnabled = useHdrChecked ? useHdrChecked.checked : true;
+
+            if (!state.rx_stable) {
+                hdrStatusEl.textContent = 'Source: No signal';
+                hdrStatusEl.className = 'gst-hdr-status';
+            } else if (sourceIsHdr && hdrEnabled) {
+                hdrStatusEl.textContent = `HDR ${colorDepth}-bit pipeline active (ENCODED + Vulkan)`;
+                hdrStatusEl.className = 'gst-hdr-status hdr-enabled';
+            } else if (sourceIsHdr && !hdrEnabled) {
+                hdrStatusEl.textContent = `HDR source detected but HDR mode disabled - using SDR pipeline`;
+                hdrStatusEl.className = 'gst-hdr-status hdr-disabled';
+            } else {
+                hdrStatusEl.textContent = `SDR ${colorDepth}-bit source - using standard pipeline`;
+                hdrStatusEl.className = 'gst-hdr-status';
+            }
         }
     }
 }

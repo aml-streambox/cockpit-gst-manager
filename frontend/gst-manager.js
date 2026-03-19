@@ -353,11 +353,11 @@ function updateDetailView() {
                 </div>
                 ` : ''}
                 <hr style="margin: 10px 0; border: none; border-top: 1px solid #ddd;">
-                <pre style="font-size: 11px; white-space: pre-wrap; word-break: break-all;">${escapeHtml(inst.pipeline)}</pre>
+                <pre style="font-size: 11px; white-space: pre-wrap; word-break: break-all;">gst-launch-1.0 -e ${escapeHtml(inst.pipeline)}</pre>
             </div>
         `;
     } else {
-        document.getElementById("detail-pipeline").textContent = inst.pipeline;
+        document.getElementById("detail-pipeline").textContent = 'gst-launch-1.0 -e ' + inst.pipeline;
     }
 
     // Update button states

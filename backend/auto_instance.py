@@ -48,6 +48,9 @@ class AutoInstanceConfig:
     recording_enabled: bool = False
     recording_path: str = "/mnt/sdcard/recordings/capture.ts"
     
+    # HDR mode
+    use_hdr: bool = True  # When True and source is HDR 10-bit, use HDR pipeline
+    
     # Auto-start behavior
     autostart_on_ready: bool = True
     
@@ -55,6 +58,10 @@ class AutoInstanceConfig:
     width: int = 3840
     height: int = 2160
     framerate: int = 60
+    
+    # Runtime info (from HDMI RX detection)
+    source_is_hdr: bool = False
+    source_color_depth: int = 8
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
@@ -97,33 +104,54 @@ class PipelineBuilder:
         
         audio_device = "hw:0,6" if config.audio_source == AudioSource.HDMI_RX else "hw:0,0"
         
-        # Build pipeline
-        # Structure:
-        #   video_branch ! mux. 
-        #   audio_branch ! mux. 
-        #   mpegtsmux name=mux ... ! output
+        # Determine if we should use HDR 10-bit pipeline.
+        # When the user explicitly enables use_hdr, trust their choice and
+        # generate the HDR pipeline regardless of live source detection.
+        # Source auto-detection (source_is_hdr / source_color_depth) only
+        # matters for the auto-start path in on_passthrough_ready().
+        use_hdr_pipeline = config.use_hdr
         
-        pipeline = (
-            # Video branch ending with reference to muxer
-            f'v4l2src device=/dev/video71 io-mode=dmabuf do-timestamp=true ! '
-            f'video/x-raw,format=NV21,width={config.width},height={config.height},'
-            f'framerate={config.framerate}/1 ! '
-            f'queue max-size-buffers=30 max-size-time=0 max-size-bytes=0 ! '
-            f'amlvenc gop={gop} gop-pattern=0 framerate={config.framerate} '
-            f'bitrate={config.bitrate_kbps} rc-mode={config.rc_mode} ! '
-            f'video/x-h265 ! '
-            f'h265parse config-interval=-1 ! '
-            f'queue max-size-buffers=30 max-size-time=0 max-size-bytes=0 ! '
-            f'mux. '  # Video goes to muxer
-            # Audio branch ending with reference to muxer  
-            f'alsasrc device={audio_device} buffer-time=50000 provide-clock=false '
+        # Build pipeline
+        if use_hdr_pipeline:
+            # HDR 10-bit pipeline: ENCODED format + internal-bit-depth=10 + Vulkan backend
+            pipeline = (
+                f'v4l2src device=/dev/video71 io-mode=dmabuf do-timestamp=true ! '
+                f'video/x-raw,format=ENCODED,width={config.width},height={config.height},'
+                f'framerate={config.framerate}/1 ! '
+                f'videorate ! '
+                f'amlvenc internal-bit-depth=10 v10conv-backend=0 '
+                f'gop={gop} gop-pattern=0 bitrate={config.bitrate_kbps} '
+                f'framerate={config.framerate} rc-mode={config.rc_mode} ! '
+                f'video/x-h265 ! '
+                f'h265parse config-interval=-1 ! '
+                f'queue max-size-buffers=30 max-size-time=0 max-size-bytes=0 ! '
+                f'mux. '
+            )
+        else:
+            # SDR 8-bit pipeline: NV21 format (standard)
+            pipeline = (
+                f'v4l2src device=/dev/video71 io-mode=dmabuf do-timestamp=true ! '
+                f'video/x-raw,format=NV21,width={config.width},height={config.height},'
+                f'framerate={config.framerate}/1 ! '
+                f'queue max-size-buffers=30 max-size-time=0 max-size-bytes=0 ! '
+                f'amlvenc gop={gop} gop-pattern=0 framerate={config.framerate} '
+                f'bitrate={config.bitrate_kbps} rc-mode={config.rc_mode} ! '
+                f'video/x-h265 ! '
+                f'h265parse config-interval=-1 ! '
+                f'queue max-size-buffers=30 max-size-time=0 max-size-bytes=0 ! '
+                f'mux. '
+            )
+        
+        # Audio branch (same for both SDR/HDR)
+        pipeline += (
+            f'alsasrc device={audio_device} buffer-time=500000 provide-clock=false '
             f'slave-method=re-timestamp ! '
             f'audio/x-raw,rate=48000,channels=2,format=S16LE ! '
             f'queue max-size-buffers=0 max-size-time=500000000 max-size-bytes=0 ! '
             f'audioconvert ! audioresample ! avenc_aac bitrate=128000 ! aacparse ! '
             f'queue max-size-buffers=0 max-size-time=500000000 max-size-bytes=0 ! '
-            f'mux. '  # Audio goes to muxer
-            # Muxer definition and output
+            f'mux. '
+            # Muxer definition
             f'mpegtsmux name=mux alignment=7 latency=100000000'
         )
         
@@ -172,6 +200,7 @@ class AutoInstanceManager:
         srt_port=8888,
         recording_enabled=False,
         recording_path="/mnt/sdcard/recordings/capture.ts",
+        use_hdr=True,  # Use HDR 10-bit when source is HDR
         autostart_on_ready=True  # Key: auto-start when HDMI ready
     )
     
@@ -268,6 +297,12 @@ class AutoInstanceManager:
             config.height = hdmi_tx_status.height or config.height
             config.framerate = hdmi_tx_status.fps or config.framerate
         
+        # Update HDR info from event manager's RX status
+        if self.event_manager:
+            rx_status = self.event_manager.get_hdmi_status()
+            config.source_color_depth = rx_status.get("color_depth", 8)
+            config.source_is_hdr = rx_status.get("hdr_info", 0) > 0
+        
         self.config = config
         
         # Generate pipeline
@@ -344,6 +379,23 @@ class AutoInstanceManager:
         self.config.height = hdmi_tx_status.height or self.config.height
         self.config.framerate = hdmi_tx_status.fps or self.config.framerate
         
+        # Update HDR info from event manager's RX status
+        source_is_hdr = False
+        if self.event_manager:
+            rx_status = self.event_manager.get_hdmi_status()
+            self.config.source_color_depth = rx_status.get("color_depth", 8)
+            source_is_hdr = rx_status.get("hdr_info", 0) > 0
+            self.config.source_is_hdr = source_is_hdr
+        
+        # For auto-start, gate HDR on actual source capability:
+        # user wants HDR (use_hdr=True) but source is SDR → use SDR pipeline.
+        # We temporarily adjust use_hdr for pipeline generation, then restore it
+        # so the saved preference is preserved.
+        original_use_hdr = self.config.use_hdr
+        if self.config.use_hdr and not source_is_hdr:
+            logger.info("Auto-start: source is not HDR, falling back to SDR pipeline")
+            self.config.use_hdr = False
+        
         # If instance exists and is stopped, recreate with new pipeline
         if self.instance_id:
             instance = self.instance_manager.get_instance(self.instance_id)
@@ -354,6 +406,12 @@ class AutoInstanceManager:
             # Create new instance
             logger.info("Creating auto instance for passthrough")
             await self.create_or_update(self.config, hdmi_tx_status)
+        
+        # Restore the user's HDR preference so it's not lost in saved config
+        self.config.use_hdr = original_use_hdr
+        if original_use_hdr and not source_is_hdr:
+            # Re-save with the restored preference so it persists correctly
+            await self.save()
         
         # Start the instance
         if self.instance_id:
@@ -418,6 +476,8 @@ class AutoInstanceManager:
             self.config.recording_path = updates["recording_path"]
         if "autostart_on_ready" in updates:
             self.config.autostart_on_ready = bool(updates["autostart_on_ready"])
+        if "use_hdr" in updates:
+            self.config.use_hdr = bool(updates["use_hdr"])
         
         # Recreate instance with new pipeline if it exists and is stopped
         if self.instance_id:

@@ -24,6 +24,8 @@ SyslogIdentifier=gst-manager
 # Environment
 Environment="GST_DEBUG=2"
 Environment="PYTHONUNBUFFERED=1"
+# Vulkan ICD loader (Mali-G52) requires XDG_RUNTIME_DIR to access the GPU
+Environment="XDG_RUNTIME_DIR=/run/user/0"
 
 # Security hardening (optional, adjust as needed)
 # ProtectSystem=strict

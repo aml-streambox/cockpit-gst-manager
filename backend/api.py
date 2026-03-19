@@ -287,7 +287,8 @@ if DBUS_LIBRARY == "dbus_next":
                     srt_port=config_data.get("srt_port", 8888),
                     recording_enabled=config_data.get("recording_enabled", False),
                     recording_path=config_data.get("recording_path", "/mnt/sdcard/recordings/capture.ts"),
-                    autostart_on_ready=config_data.get("autostart_on_ready", True)
+                    autostart_on_ready=config_data.get("autostart_on_ready", True),
+                    use_hdr=config_data.get("use_hdr", True)
                 )
                 
                 # Get current HDMI TX status for resolution
@@ -335,15 +336,18 @@ if DBUS_LIBRARY == "dbus_next":
                     audio_source=AudioSource(config_data.get("audio_source", "hdmi_rx")),
                     srt_port=config_data.get("srt_port", 8888),
                     recording_enabled=config_data.get("recording_enabled", False),
-                    recording_path=config_data.get("recording_path", "/mnt/sdcard/recordings/capture.ts")
+                    recording_path=config_data.get("recording_path", "/mnt/sdcard/recordings/capture.ts"),
+                    use_hdr=config_data.get("use_hdr", True)
                 )
                 
-                # Use detected resolution if available
+                # Use detected resolution and HDR info if available
                 if self.event_manager:
                     state = self.event_manager.get_passthrough_state()
                     config.width = state.get("width", 3840)
                     config.height = state.get("height", 2160)
                     config.framerate = state.get("framerate", 60)
+                    config.source_color_depth = state.get("color_depth", 8)
+                    config.source_is_hdr = state.get("source_is_hdr", False)
                 
                 builder = PipelineBuilder()
                 return builder.build_preview(config)

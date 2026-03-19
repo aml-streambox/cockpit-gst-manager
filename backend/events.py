@@ -50,7 +50,8 @@ class HdmiStatus:
     # Extended info from tvservice
     allm_mode: int = 0
     vrr_mode: int = 0
-    hdr_info: int = 0
+    hdr_info: int = 0  # HdrType enum (0=SDR, 1=HDR10, 2=HLG, 3=HDR10+, 4=DV)
+    hdr_status: str = ""  # Raw sysfs string (e.g. "HDR10", "HLG", "SDR")
     source: str = "unknown"  # polling, tvservice, sysfs, v4l2
 
     @property
@@ -76,6 +77,8 @@ class HdmiStatus:
             "color_depth": self.color_depth,
             "allm_mode": self.allm_mode,
             "vrr_mode": self.vrr_mode,
+            "hdr_info": self.hdr_info,
+            "hdr_status": self.hdr_status,
             "source": self.source
         }
 
@@ -263,8 +266,9 @@ class HdmiMonitor:
             status.allm_mode = info.allm_mode
             status.vrr_mode = info.vrr_mode
             status.hdr_info = info.hdr_info
+            status.hdr_status = info.hdr_status
 
-            logger.debug(f"TvService status: {status.resolution}, allm={status.allm_mode}, vrr={status.vrr_mode}")
+            logger.debug(f"TvService status: {status.resolution}, allm={status.allm_mode}, vrr={status.vrr_mode}, hdr={status.hdr_status}({status.hdr_info})")
 
         except Exception as e:
             logger.warning(f"TvService get_status failed: {e}")
@@ -454,7 +458,8 @@ class HdmiMonitor:
             new_status.cable_connected != self.last_status.cable_connected or
             new_status.width != self.last_status.width or
             new_status.height != self.last_status.height or
-            new_status.fps != self.last_status.fps
+            new_status.fps != self.last_status.fps or
+            new_status.hdr_info != self.last_status.hdr_info
         )
 
     async def _handle_status_change(self, status: HdmiStatus) -> None:
@@ -643,6 +648,11 @@ class EventManager:
             "height": self._tx_status.height if self._tx_status else 0,
             "framerate": self._tx_status.fps if self._tx_status else 0,
             "resolution": self._tx_status.resolution if self._tx_status else "",
+            # HDR info from RX signal
+            "color_depth": self.last_hdmi_status.color_depth if self.last_hdmi_status else 8,
+            "hdr_info": self.last_hdmi_status.hdr_info if self.last_hdmi_status else 0,
+            "hdr_status": self.last_hdmi_status.hdr_status if self.last_hdmi_status else "",
+            "source_is_hdr": (self.last_hdmi_status.hdr_info > 0) if self.last_hdmi_status else False,
             # Can capture when RX is stable AND TX is ready with valid resolution
             "can_capture": rx_stable and tx_ready
         }

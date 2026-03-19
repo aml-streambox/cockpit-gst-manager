@@ -103,11 +103,26 @@
                             <div class="gst-detected-resolution" id="auto-detected-res">
                                 Detected: -
                             </div>
+                            <div class="gst-detected-hdr" id="auto-detected-hdr" style="font-size: 0.85em; color: #888;">
+                            </div>
                         </div>
                         
                         <!-- Configuration Form -->
                         <div class="gst-auto-config-form">
                             <h3>Video Settings</h3>
+                            
+                            <label class="gst-toggle-label">
+                                <input type="checkbox" id="auto-use-hdr" checked>
+                                <span class="gst-toggle-slider"></span>
+                                Use HDR (10-bit)
+                            </label>
+                            <span class="gst-hint" id="auto-hdr-hint">
+                                When enabled and HDMI source is HDR 10-bit, captures in HDR with Vulkan GPU conversion.
+                                When disabled or source is SDR, uses standard 8-bit NV21 capture.
+                            </span>
+                            <div class="gst-hdr-status" id="auto-hdr-status" style="margin: 8px 0; font-size: 0.85em; color: #888;">
+                                Source: detecting...
+                            </div>
                             
                             <div class="gst-form-row">
                                 <div class="gst-form-group">
@@ -172,7 +187,7 @@
                         
                         <!-- Pipeline Preview -->
                         <div class="gst-pipeline-preview-section">
-                            <h3>Generated Pipeline</h3>
+                            <h3>Generated Command (gst-launch-1.0 -e automatically added)</h3>
                             <pre id="auto-pipeline-preview" class="gst-code-block"></pre>
                         </div>
                         
@@ -204,7 +219,7 @@
                                 placeholder="e.g., HDMI to SRT Stream">
                         </div>
                         <div class="gst-form-group">
-                            <label for="instance-pipeline">Pipeline Command</label>
+                            <label for="instance-pipeline">Pipeline (gst-launch-1.0 -e added automatically)</label>
                             <textarea id="instance-pipeline" class="gst-textarea gst-pipeline-input" rows="6"
                                 placeholder="v4l2src device=/dev/vdin1 ! video/x-raw,format=NV12 ! aml_h264enc bitrate=20000000 ! h264parse ! mpegtsmux ! srtsink uri=&quot;srt://0.0.0.0:5000?mode=listener&quot;"></textarea>
                         </div>
@@ -255,7 +270,7 @@
                             </div>
                         </div>
                         <div class="gst-detail-pipeline">
-                            <span class="gst-label">Pipeline:</span>
+                            <span class="gst-label">Command (gst-launch-1.0 -e added):</span>
                             <pre id="detail-pipeline" class="gst-code-block"></pre>
                         </div>
                         <div class="gst-detail-actions">

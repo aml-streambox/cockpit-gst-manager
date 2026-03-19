@@ -65,6 +65,15 @@ class TvinColorFmt(IntEnum):
     TVIN_COLOR_FMT_MAX = 4
 
 
+class HdrType(IntEnum):
+    """HDR type enum (matches vd_format_e in kernel)."""
+    SDR = 0
+    HDR10 = 1
+    HLG = 2
+    HDR10PLUS = 3
+    DOLBY_VISION = 4
+
+
 # ============================================================================
 # Data structures
 # ============================================================================
@@ -80,7 +89,8 @@ class SignalInfo:
     color_format: int = 0
     status: int = TvinSigStatus.TVIN_SIG_STATUS_NULL
     is_dvi: bool = False
-    hdr_info: int = 0
+    hdr_info: int = 0  # HdrType enum value (0=SDR, 1=HDR10, 2=HLG, 3=HDR10+, 4=DV)
+    hdr_status: str = ""  # Raw sysfs string (e.g. "HDR10", "HLG", "SDR")
     allm_mode: int = 0
     vrr_mode: int = 0
 
@@ -108,6 +118,7 @@ class SignalInfo:
             "resolution": self.resolution,
             "is_dvi": self.is_dvi,
             "hdr_info": self.hdr_info,
+            "hdr_status": self.hdr_status,
             "allm_mode": self.allm_mode,
             "vrr_mode": self.vrr_mode,
         }
@@ -294,6 +305,12 @@ class TvClientLib:
         """Get current signal information."""
         info = SignalInfo(source=source)
         
+        # HDR info from HDMI RX sysfs -- always available, independent of libtvclient.
+        # libtvclient has no HDR polling API; sysfs reflects HDMI InfoFrame data.
+        hdr_status_str, hdr_type = self.get_hdmi_rx_hdr_status()
+        info.hdr_info = hdr_type
+        info.hdr_status = hdr_status_str
+
         if not self.available:
             return info
 
@@ -333,6 +350,53 @@ class TvClientLib:
             return self._lib.GetSourceConnectStatus(self._handle, source) == 1
         except Exception:
             return False
+
+    # HDR sysfs paths (from HDMI RX driver)
+    HDMI_RX_HDR_STATUS_PATH = Path("/sys/class/hdmirx/hdmirx0/hdmi_hdr_status")
+
+    # Mapping from sysfs HDR status string to HdrType enum
+    # Based on streambox-tv.c lines 783-803
+    _HDR_STATUS_MAP = {
+        "HDR10Plus": HdrType.HDR10PLUS,
+        "HDR10+": HdrType.HDR10PLUS,
+        "HLG": HdrType.HLG,
+        "DolbyVision-Lowlatency": HdrType.DOLBY_VISION,
+        "DolbyVision-Std": HdrType.DOLBY_VISION,
+        "DolbyVision": HdrType.DOLBY_VISION,
+        "HDR10": HdrType.HDR10,
+        "SMPTE": HdrType.HDR10,
+        "SDR": HdrType.SDR,
+    }
+
+    def get_hdmi_rx_hdr_status(self) -> tuple:
+        """Read HDR status from HDMI RX sysfs.
+        
+        libtvclient.so has no HDR polling API -- the only reliable way
+        to get the current HDR type is via the kernel sysfs node that
+        reflects the HDMI InfoFrame data.
+        
+        Returns:
+            (hdr_status_str, hdr_type): Tuple of raw sysfs string and HdrType int.
+                hdr_status_str: e.g. "HDR10", "HLG", "SDR", "" (if unreadable)
+                hdr_type: HdrType enum value (0=SDR if unknown/unreadable)
+        """
+        raw = self._read_sysfs_file(self.HDMI_RX_HDR_STATUS_PATH).strip()
+        if not raw:
+            return ("", HdrType.SDR)
+        
+        # Try exact match first
+        hdr_type = self._HDR_STATUS_MAP.get(raw, None)
+        if hdr_type is not None:
+            return (raw, int(hdr_type))
+        
+        # Case-insensitive prefix match for robustness
+        raw_lower = raw.lower()
+        for key, val in self._HDR_STATUS_MAP.items():
+            if raw_lower.startswith(key.lower()):
+                return (raw, int(val))
+        
+        logger.debug(f"Unknown HDR status from sysfs: '{raw}'")
+        return (raw, HdrType.SDR)
 
     def get_hdmi_tx_status(self) -> HdmiTxStatus:
         """Get HDMI TX output status from sysfs.
@@ -571,7 +635,8 @@ class TvServiceMonitor:
             new_info.status != self._last_info.status or
             new_info.width != self._last_info.width or
             new_info.height != self._last_info.height or
-            new_info.fps != self._last_info.fps
+            new_info.fps != self._last_info.fps or
+            new_info.hdr_info != self._last_info.hdr_info
         )
 
 

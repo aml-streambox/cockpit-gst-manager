@@ -1033,6 +1033,43 @@ body {
     color: var(--gst-color-text-muted);
 }
 
+/* HDR Badge & Status */
+.gst-hdr-badge {
+    display: inline-block;
+    padding: 1px 8px;
+    border-radius: 3px;
+    font-size: 12px;
+    font-weight: 600;
+    font-family: var(--gst-font-mono);
+    margin-left: var(--gst-spacing-sm);
+}
+
+.gst-hdr-badge.hdr-active {
+    background-color: #7b2ff7;
+    color: #fff;
+}
+
+.gst-hdr-badge.hdr-inactive {
+    background-color: var(--gst-color-bg);
+    color: var(--gst-color-text-muted);
+    border: 1px solid var(--gst-color-border);
+}
+
+.gst-hdr-status {
+    font-size: 0.85em;
+    color: var(--gst-color-text-muted);
+    margin: var(--gst-spacing-sm) 0;
+}
+
+.gst-hdr-status.hdr-enabled {
+    color: #7b2ff7;
+    font-weight: 600;
+}
+
+.gst-hdr-status.hdr-disabled {
+    color: var(--gst-color-warning);
+}
+
 /* Auto Config Form */
 .gst-auto-config-form {
     background: var(--gst-color-bg-card);
