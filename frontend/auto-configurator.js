@@ -461,17 +461,30 @@ class AutoConfigurator {
             setText('auto-detected-res', 'Detected: -');
         }
 
-        // HDR source detection
+        // HDR source detection and pipeline mode
         const hdrStatusEl = document.getElementById('auto-hdr-status');
         const detectedHdrEl = document.getElementById('auto-detected-hdr');
+        const useHdrChecked = document.getElementById('auto-use-hdr');
+        const hdrEnabled = useHdrChecked ? useHdrChecked.checked : true;
         const sourceIsHdr = state.source_is_hdr || (state.color_depth && state.color_depth >= 10);
         const colorDepth = state.color_depth || 8;
 
+        // Badge shows the *pipeline mode* (what will actually run), not just the source
         if (detectedHdrEl) {
-            if (sourceIsHdr) {
+            if (sourceIsHdr && hdrEnabled) {
+                // HDR source + HDR enabled → HDR 10-bit pipeline
                 detectedHdrEl.textContent = `HDR ${colorDepth}-bit`;
                 detectedHdrEl.className = 'gst-hdr-badge hdr-active';
+            } else if (!sourceIsHdr && hdrEnabled && state.rx_stable) {
+                // SDR source + HDR enabled → 10-bit pipeline (force mode)
+                detectedHdrEl.textContent = '10-bit';
+                detectedHdrEl.className = 'gst-hdr-badge hdr-active';
+            } else if (sourceIsHdr && !hdrEnabled && state.rx_stable) {
+                // HDR source + HDR disabled → show source is HDR but pipeline is SDR
+                detectedHdrEl.textContent = `HDR ${colorDepth}-bit`;
+                detectedHdrEl.className = 'gst-hdr-badge hdr-inactive';
             } else if (state.rx_stable) {
+                // SDR source + HDR disabled → plain SDR
                 detectedHdrEl.textContent = `SDR ${colorDepth}-bit`;
                 detectedHdrEl.className = 'gst-hdr-badge hdr-inactive';
             } else {
@@ -480,15 +493,16 @@ class AutoConfigurator {
             }
         }
 
+        // Status line describes both source and pipeline state
         if (hdrStatusEl) {
-            const useHdrChecked = document.getElementById('auto-use-hdr');
-            const hdrEnabled = useHdrChecked ? useHdrChecked.checked : true;
-
             if (!state.rx_stable) {
                 hdrStatusEl.textContent = 'Source: No signal';
                 hdrStatusEl.className = 'gst-hdr-status';
             } else if (sourceIsHdr && hdrEnabled) {
                 hdrStatusEl.textContent = `HDR ${colorDepth}-bit pipeline active (ENCODED + Vulkan)`;
+                hdrStatusEl.className = 'gst-hdr-status hdr-enabled';
+            } else if (!sourceIsHdr && hdrEnabled) {
+                hdrStatusEl.textContent = `SDR source — 10-bit pipeline active (ENCODED + Vulkan)`;
                 hdrStatusEl.className = 'gst-hdr-status hdr-enabled';
             } else if (sourceIsHdr && !hdrEnabled) {
                 hdrStatusEl.textContent = `HDR source detected but HDR mode disabled - using SDR pipeline`;

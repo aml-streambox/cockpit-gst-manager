@@ -361,9 +361,18 @@ class InstanceManager:
     async def stop_instance(self, instance_id: str) -> bool:
         """Stop a running pipeline instance.
 
-        Uses a 3-stage shutdown: SIGINT (graceful EOS) -> SIGTERM -> SIGKILL.
-        The Wave521 kernel driver performs hardware reset on fd close (vpu_release),
-        so even after SIGKILL the encoder hardware is left in a clean state.
+        Uses a 4-stage shutdown:
+          SIGUSR1 (encoder EOS injection) -> SIGINT (GStreamer EOS) ->
+          SIGTERM -> SIGKILL.
+
+        Stage 0 (SIGUSR1): The amlvenc encoder plugin catches SIGUSR1 and
+        injects an EOS event directly on its sink pad.  This bypasses any
+        blocked upstream element (e.g. v4l2src stuck in poll/DQBUF) and lets
+        the encoder flush the last frame cleanly.
+
+        The Wave521 kernel driver performs hardware reset on fd close
+        (vpu_release), so even after SIGKILL the encoder hardware is left
+        in a clean state.
 
         Args:
             instance_id: Instance ID to stop.
@@ -388,24 +397,32 @@ class InstanceManager:
         process = self.processes.get(instance_id)
         if process:
             try:
-                # Stage 1: SIGINT — lets gst-launch send EOS and shut down cleanly
-                logger.info(f"Stopping instance {instance_id}: sending SIGINT (pid={process.pid})")
-                process.send_signal(signal.SIGINT)
+                # Stage 0: SIGUSR1 — amlvenc plugin injects EOS internally,
+                # bypassing blocked v4l2src.  If the encoder is healthy this
+                # causes a clean pipeline shutdown within ~1-2 seconds.
+                logger.info(f"Stopping instance {instance_id}: sending SIGUSR1 (pid={process.pid})")
+                process.send_signal(signal.SIGUSR1)
                 try:
-                    await asyncio.wait_for(process.wait(), timeout=5.0)
+                    await asyncio.wait_for(process.wait(), timeout=3.0)
                 except asyncio.TimeoutError:
-                    # Stage 2: SIGTERM — stronger signal, GStreamer will attempt cleanup
-                    logger.warning(f"Instance {instance_id}: SIGINT timeout, sending SIGTERM")
-                    process.send_signal(signal.SIGTERM)
+                    # Stage 1: SIGINT — lets gst-launch send EOS the normal way
+                    logger.warning(f"Instance {instance_id}: SIGUSR1 timeout, sending SIGINT")
+                    process.send_signal(signal.SIGINT)
                     try:
-                        await asyncio.wait_for(process.wait(), timeout=3.0)
+                        await asyncio.wait_for(process.wait(), timeout=5.0)
                     except asyncio.TimeoutError:
-                        # Stage 3: SIGKILL — force kill; kernel vpu_release() will
-                        # hw-reset the encoder on fd close, ensuring clean state
-                        logger.warning(f"Instance {instance_id}: SIGTERM timeout, sending SIGKILL "
-                                       "(kernel will hw-reset encoder on fd close)")
-                        process.kill()
-                        await process.wait()
+                        # Stage 2: SIGTERM — stronger signal, GStreamer will attempt cleanup
+                        logger.warning(f"Instance {instance_id}: SIGINT timeout, sending SIGTERM")
+                        process.send_signal(signal.SIGTERM)
+                        try:
+                            await asyncio.wait_for(process.wait(), timeout=3.0)
+                        except asyncio.TimeoutError:
+                            # Stage 3: SIGKILL — force kill; kernel vpu_release() will
+                            # hw-reset the encoder on fd close, ensuring clean state
+                            logger.warning(f"Instance {instance_id}: SIGTERM timeout, sending SIGKILL "
+                                           "(kernel will hw-reset encoder on fd close)")
+                            process.kill()
+                            await process.wait()
             except ProcessLookupError:
                 pass  # Process already gone
 

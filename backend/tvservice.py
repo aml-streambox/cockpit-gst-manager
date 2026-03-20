@@ -528,7 +528,16 @@ class TvClientLib:
 # ============================================================================
 
 class TvServiceMonitor:
-    """Async monitor for tvservice events with fallback to polling."""
+    """Async monitor for tvservice events with fallback to polling.
+
+    When the native tvservice library is available, registers a C event
+    callback via ``setTvEventCallback``.  The callback fires on a C/binder
+    thread, so it uses ``loop.call_soon_threadsafe`` to wake the asyncio
+    polling loop immediately — bypassing the normal 2-second sleep.
+
+    If the native callback is not available (library missing, registration
+    fails), the monitor falls back to pure polling.
+    """
 
     def __init__(
         self,
@@ -539,11 +548,16 @@ class TvServiceMonitor:
         self.source = source
         self.on_signal_change = on_signal_change
         self.on_source_connect = on_source_connect
-        
+
         self._client: Optional[TvClientLib] = None
         self._running = False
         self._task: Optional[asyncio.Task] = None
         self._last_info: Optional[SignalInfo] = None
+        # asyncio.Event used to wake the poll loop early when a native
+        # tvserver event arrives.
+        self._wake_event: Optional[asyncio.Event] = None
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._native_events_active = False
 
     @property
     def available(self) -> bool:
@@ -555,10 +569,15 @@ class TvServiceMonitor:
         if self._running:
             return True
 
+        self._loop = asyncio.get_running_loop()
+        self._wake_event = asyncio.Event()
+
         # Try to connect to tvservice
         self._client = TvClientLib()
         if self._client.connect():
             logger.info("TvService monitor using native library")
+            # Attempt to register the native event callback
+            self._register_native_callback()
         else:
             logger.warning("TvService not available, using polling fallback")
             self._client = None
@@ -567,9 +586,61 @@ class TvServiceMonitor:
         self._task = asyncio.create_task(self._monitor_loop())
         return True
 
+    # ------------------------------------------------------------------
+    # Native tvserver callback
+    # ------------------------------------------------------------------
+
+    def _register_native_callback(self) -> None:
+        """Register the C event callback with tvservice.
+
+        The callback fires on a binder/C thread.  We only use it to *wake*
+        the asyncio poll loop so that the next signal check happens
+        immediately rather than after the full poll interval.
+        """
+        if not self._client or not self._client._lib:
+            return
+
+        try:
+            self._client.set_event_callback(self._on_native_event)
+            self._native_events_active = True
+            logger.info("Registered native tvserver event callback")
+        except Exception as e:
+            logger.warning(f"Failed to register tvserver event callback: {e}")
+            self._native_events_active = False
+
+    def _on_native_event(self, event_type: int, event_data) -> None:
+        """Called from C thread when tvserver sends an event.
+
+        Interesting event types:
+            4  — TV_EVENT_TYPE_SIGLE_DETECT  (signal detection change)
+            10 — TV_EVENT_TYPE_SOURCE_CONNECT (cable connect/disconnect)
+
+        We do NOT do heavy processing here — just wake the asyncio poll
+        loop so it re-checks signal status immediately.
+        """
+        try:
+            ev_name = TvEventType(event_type).name
+        except ValueError:
+            ev_name = str(event_type)
+
+        logger.info(f"Native tvserver event: type={ev_name} ({event_type})")
+
+        # Only wake on events we care about
+        if event_type in (
+            TvEventType.TV_EVENT_TYPE_SIGLE_DETECT,
+            TvEventType.TV_EVENT_TYPE_SOURCE_CONNECT,
+        ):
+            if self._loop and self._wake_event:
+                self._loop.call_soon_threadsafe(self._wake_event.set)
+
+    # ------------------------------------------------------------------
+
     async def stop(self):
         """Stop the monitor."""
         self._running = False
+        # Wake the loop so it exits promptly
+        if self._wake_event:
+            self._wake_event.set()
         if self._task:
             self._task.cancel()
             try:
@@ -581,16 +652,17 @@ class TvServiceMonitor:
         if self._client:
             self._client.disconnect()
             self._client = None
+        self._native_events_active = False
 
     def get_signal_info(self) -> SignalInfo:
         """Get current signal information."""
         if self._client and self._client.available:
             return self._client.get_signal_info(self.source)
         return SignalInfo(source=self.source)
-    
+
     def get_hdmi_tx_status(self) -> HdmiTxStatus:
         """Get HDMI TX output status.
-        
+
         This works even without tvservice library connection
         by reading directly from sysfs.
         """
@@ -598,14 +670,29 @@ class TvServiceMonitor:
         client = TvClientLib()
         return client.get_hdmi_tx_status()
 
+    def interrupt(self) -> None:
+        """Wake the poll loop immediately (thread-safe).
+
+        Can be called from any thread.  Used by external code (e.g.
+        ``HdmiMonitor``) that has its own native event path.
+        """
+        if self._loop and self._wake_event:
+            self._loop.call_soon_threadsafe(self._wake_event.set)
+
     async def _monitor_loop(self):
-        """Main monitoring loop - polls if native events aren't available."""
+        """Main monitoring loop.
+
+        Uses ``_wake_event`` to sleep interruptibly.  When a native
+        tvserver event fires, the event is set and the loop re-checks
+        signal status immediately instead of waiting for the full poll
+        interval.
+        """
         poll_interval = 2.0  # seconds
-        
+
         while self._running:
             try:
                 info = self.get_signal_info()
-                
+
                 # Check for changes
                 if self._signal_changed(info):
                     logger.debug(f"Signal changed: {info.resolution}")
@@ -618,7 +705,17 @@ class TvServiceMonitor:
                             logger.error(f"Signal change callback error: {e}")
                     self._last_info = info
 
-                await asyncio.sleep(poll_interval)
+                # Interruptible sleep: returns early if _wake_event is set
+                self._wake_event.clear()
+                try:
+                    await asyncio.wait_for(
+                        self._wake_event.wait(), timeout=poll_interval
+                    )
+                    # Event was set — native event arrived, re-poll immediately
+                    logger.debug("Poll loop woken by native event, re-checking signal")
+                except asyncio.TimeoutError:
+                    # Normal timeout — just loop again
+                    pass
 
             except asyncio.CancelledError:
                 break
@@ -630,7 +727,7 @@ class TvServiceMonitor:
         """Check if signal has changed significantly."""
         if self._last_info is None:
             return True
-        
+
         return (
             new_info.status != self._last_info.status or
             new_info.width != self._last_info.width or

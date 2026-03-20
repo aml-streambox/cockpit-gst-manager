@@ -180,6 +180,10 @@ class HdmiMonitor:
     - 2 seconds when no signal
     - 5 seconds when signal is active
     - 500ms stability check after change
+
+    The polling loop supports *interrupt-style* waking: external code
+    (e.g. a native tvserver event callback) can call :meth:`interrupt` to
+    force an immediate re-poll without waiting for the full interval.
     """
 
     POLL_NO_SIGNAL = 2.0
@@ -208,6 +212,8 @@ class HdmiMonitor:
         self.last_status: Optional[HdmiStatus] = None
         self._task: Optional[asyncio.Task] = None
         self._tvservice_client: Optional[Any] = None
+        # Used to wake the poll loop early from a native event
+        self._wake_event: Optional[asyncio.Event] = None
 
     def get_status(self) -> HdmiStatus:
         """Read current HDMI status.
@@ -402,12 +408,16 @@ class HdmiMonitor:
 
         logger.info("Starting HDMI monitor")
         self.running = True
+        self._wake_event = asyncio.Event()
         self._task = asyncio.create_task(self._monitor_loop())
 
     async def stop(self) -> None:
         """Stop the monitoring loop."""
         logger.info("Stopping HDMI monitor")
         self.running = False
+        # Wake the loop so it exits promptly
+        if self._wake_event:
+            self._wake_event.set()
         if self._task:
             self._task.cancel()
             try:
@@ -416,8 +426,22 @@ class HdmiMonitor:
                 pass
             self._task = None
 
+    def interrupt(self) -> None:
+        """Wake the polling loop immediately for an early re-check.
+
+        Thread-safe: can be called from any thread via
+        ``loop.call_soon_threadsafe(monitor.interrupt)``.
+        """
+        if self._wake_event:
+            self._wake_event.set()
+
     async def _monitor_loop(self) -> None:
-        """Main monitoring loop with adaptive polling."""
+        """Main monitoring loop with adaptive polling.
+
+        Sleeps are interruptible via ``_wake_event``.  When a native
+        tvserver event fires (signal change, cable connect/disconnect),
+        the event is set and the loop re-polls immediately.
+        """
         while self.running:
             try:
                 status = self.get_status()
@@ -439,7 +463,17 @@ class HdmiMonitor:
                     if status.signal_locked
                     else self.POLL_NO_SIGNAL
                 )
-                await asyncio.sleep(interval)
+
+                # Interruptible sleep: returns early if _wake_event is set
+                self._wake_event.clear()
+                try:
+                    await asyncio.wait_for(
+                        self._wake_event.wait(), timeout=interval
+                    )
+                    # Woken by native event — re-poll immediately
+                    logger.debug("HDMI poll loop woken by native event")
+                except asyncio.TimeoutError:
+                    pass
 
             except asyncio.CancelledError:
                 break
@@ -545,9 +579,63 @@ class EventManager:
         )
         await self.hdmi_monitor.start()
         
+        # Wire up native tvserver events → HdmiMonitor interrupt
+        # This makes the polling loop wake immediately when tvserver
+        # detects a signal change, instead of waiting 2-5 seconds.
+        self._setup_native_event_bridge()
+        
         # Check initial state - HDMI might already be stable
         # This handles the case where gst-manager starts after HDMI is already settled
         await self._check_initial_state()
+    
+    def _setup_native_event_bridge(self) -> None:
+        """Bridge native tvserver events to the HdmiMonitor poll loop.
+        
+        If the HdmiMonitor's tvservice client has native events enabled,
+        register an additional callback that wakes the HdmiMonitor's
+        polling loop immediately on signal/connect events.
+        """
+        if not TVSERVICE_AVAILABLE or not self.hdmi_monitor:
+            return
+        
+        try:
+            # Access the tvservice client that HdmiMonitor lazily creates.
+            # Force it to initialize now so we can register the callback.
+            if self.hdmi_monitor._tvservice_client is None:
+                client = tvservice.TvClientLib()
+                if client.connect():
+                    self.hdmi_monitor._tvservice_client = client
+                else:
+                    logger.debug("Could not connect tvservice client for native events")
+                    return
+            
+            tv_client = self.hdmi_monitor._tvservice_client
+            if not tv_client or not tv_client._lib:
+                return
+            
+            loop = asyncio.get_running_loop()
+            hdmi_monitor = self.hdmi_monitor
+            
+            def _on_tv_event(event_type: int, event_data) -> None:
+                """C callback → wake HdmiMonitor + schedule TX check."""
+                try:
+                    ev_name = tvservice.TvEventType(event_type).name
+                except ValueError:
+                    ev_name = str(event_type)
+                
+                logger.info(f"Native tvserver event → HdmiMonitor: type={ev_name} ({event_type})")
+                
+                if event_type in (
+                    tvservice.TvEventType.TV_EVENT_TYPE_SIGLE_DETECT,
+                    tvservice.TvEventType.TV_EVENT_TYPE_SOURCE_CONNECT,
+                ):
+                    # Wake the HdmiMonitor poll loop (thread-safe)
+                    loop.call_soon_threadsafe(hdmi_monitor.interrupt)
+            
+            tv_client.set_event_callback(_on_tv_event)
+            logger.info("Native tvserver event bridge established (tvserver → HdmiMonitor)")
+        except Exception as e:
+            logger.warning(f"Failed to set up native event bridge: {e}")
     
     async def _check_initial_state(self) -> None:
         """Check if HDMI is already stable on startup."""
