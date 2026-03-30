@@ -37,6 +37,8 @@ v4l2-ctl -d /dev/vdin1 --query-dv-timings
 |-------|----------|--------|-------|
 | 60Hz | 60fps | 60fps | Standard |
 | 120Hz | 119.88fps | 120fps | Known discrepancy, use 120 in pipelines |
+| 144Hz | 143.88fps | 144fps | Requires FRL for 10-bit at 1440p |
+| 240Hz | 239.76fps | 240fps | Requires FRL for 10-bit at 1080p |
 | VRR | Variable | Variable | Requires VRR mode enabled |
 
 ---

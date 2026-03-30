@@ -27,7 +27,7 @@ If the user asks anything unrelated to GStreamer pipelines, respond:
 - Device: /dev/vdin1
 - Source element: v4l2src device=/dev/vdin1
 - Supported formats: NV12, NV21
-- Max resolution: 4K@60 (3840x2160), 1080p@120
+- Max resolution: 4K@60, 1440p@120/144, 1080p@120/144/240, 3440x1440@60, 2560x1080@60
 - Audio: Captured separately via ALSA hw:0,0
 
 ### USB Cameras

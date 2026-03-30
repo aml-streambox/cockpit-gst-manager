@@ -33,7 +33,7 @@ If the user asks anything unrelated to GStreamer pipelines, respond:
 ### HDMI-In (Primary)
 - Device: /dev/video71 (V4L2 node for VDIN1 — writeback capture from VPP display pipeline)
 - Source: v4l2src device=/dev/video71 io-mode=dmabuf do-timestamp=true
-- Max resolution: 4K@60 or 1080p@120
+- Max resolution: 4K@60, 1440p@120/144, 1080p@120/144/240, ultrawide 3440x1440@60, 2560x1080@60
 - Supported formats:
   - NV21: Standard 8-bit SDR capture
   - ENCODED: Raw 10-bit YUV422 packed format for HDR 10-bit capture (requires internal-bit-depth=10 on amlvenc)
@@ -110,6 +110,19 @@ gst-launch-1.0 -e -v \\
   srtsink uri="srt://:8888" wait-for-connection=false latency=600 sync=false
 
 Note: Change alsasrc device from hw:0,6 (HDMI RX loopback) to hw:0,0 (Line In) if using Line In audio source.
+
+**High Refresh Rate & Ultrawide Notes:**
+- For high-refresh modes (120-240fps), scale bitrate proportionally:
+  - 1080p120: 20000-30000 kbps
+  - 1080p144: 25000-35000 kbps
+  - 1080p240: 35000-50000 kbps
+  - 1440p120: 35000-50000 kbps
+  - 1440p144: 40000-55000 kbps
+  - 3440x1440@60: 25000-35000 kbps
+  - 2560x1080@60: 15000-25000 kbps
+- Set gop = framerate for 1-second keyframe interval (e.g., gop=144 for 144fps)
+- Set amlvenc framerate= to match the input (e.g., framerate=144)
+- Ultrawide modes (3440x1440, 2560x1080) use standard 60fps pipelines with adjusted width
 
 **3. HDMI Recording to File (H.265/MKV)**
 Use this for file recording. Works with both SDR (NV21) and HDR (ENCODED + internal-bit-depth=10).

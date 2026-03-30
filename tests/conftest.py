@@ -162,5 +162,15 @@ def board_context():
         "custom_plugins": ["amlge2d"],
         "storage": [
             {"path": "/mnt/sdcard", "mounted": True, "available": True, "free_gb": 32.5}
-        ]
+        ],
+        "test_signals": {
+            "1080p60":   {"width": 1920, "height": 1080, "fps": 60,  "signal": "1920x1080p60hz"},
+            "1080p144":  {"width": 1920, "height": 1080, "fps": 144, "signal": "1920x1080p144hz"},
+            "1080p240":  {"width": 1920, "height": 1080, "fps": 240, "signal": "1920x1080p240hz"},
+            "1440p60":   {"width": 2560, "height": 1440, "fps": 60,  "signal": "2560x1440p60hz"},
+            "1440p120":  {"width": 2560, "height": 1440, "fps": 120, "signal": "2560x1440p120hz"},
+            "1440p144":  {"width": 2560, "height": 1440, "fps": 144, "signal": "2560x1440p144hz"},
+            "3440x1440": {"width": 3440, "height": 1440, "fps": 60,  "signal": "3440x1440p60hz"},
+            "2560x1080": {"width": 2560, "height": 1080, "fps": 60,  "signal": "2560x1080p60hz"},
+        }
     }

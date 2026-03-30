@@ -134,7 +134,7 @@ const PipelineEditor = {
     getTemplate(type) {
         const templates = {
             "hdmi-srt":
-                'v4l2src device=/dev/vdin1 ! video/x-raw,format=NV12,width=1920,height=1080,framerate=60/1 ! queue ! aml_h264enc bitrate=20000000 profile=high gop=60 ! h264parse ! mpegtsmux ! srtsink uri="srt://0.0.0.0:5000?mode=listener"',
+                'v4l2src device=/dev/vdin1 ! video/x-raw,format=NV12 ! queue ! aml_h264enc bitrate=20000000 profile=high gop=60 ! h264parse ! mpegtsmux ! srtsink uri="srt://0.0.0.0:5000?mode=listener"',
 
             "hdmi-srt-audio":
                 'v4l2src device=/dev/vdin1 ! video/x-raw,format=NV12 ! aml_h264enc bitrate=20000000 ! h264parse ! mux. alsasrc device=hw:0,0 ! audioconvert ! faac bitrate=128000 ! aacparse ! mux. mpegtsmux name=mux ! srtsink uri="srt://0.0.0.0:5000?mode=listener"',

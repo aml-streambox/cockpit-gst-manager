@@ -181,7 +181,7 @@ class ToolHandler:
                     "bitrate": {"type": "int", "min": 0, "max": 200000000,
                                "default": 10000000},
                     "gop": {"type": "int", "min": 1, "max": 300, "default": 30},
-                    "framerate": {"type": "int", "min": 0, "max": 120, "default": 30}
+                    "framerate": {"type": "int", "min": 0, "max": 240, "default": 30}
                 }
             }
         }

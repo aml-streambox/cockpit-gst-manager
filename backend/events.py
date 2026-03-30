@@ -145,7 +145,7 @@ def parse_hdmi_info(info_str: str) -> Dict[str, Any]:
             if fps_match:
                 fps_val = int(fps_match.group(1))
                 # Frame rate might be in format 5993 (meaning 59.93Hz) or 60
-                if fps_val > 100:
+                if fps_val > 300:
                     result["fps"] = round(fps_val / 100)
                 else:
                     result["fps"] = fps_val
