@@ -16,6 +16,7 @@ logger = logging.getLogger("gst-manager.discovery")
 
 # Known device paths
 VDIN_DEVICES = ["/dev/video71", "/dev/video0", "/dev/video1", "/dev/video2"]
+VFMCAP_DEVICES = ["/dev/video_cap"]  # vfm_cap raw capture device (Path A)
 AUDIO_DEVICES = ["hw:0,0", "hw:1,0"]
 STORAGE_PATHS = ["/mnt/sdcard", "/data", "/mnt/usb"]
 HDMIRX_SYSFS = "/sys/class/hdmirx/hdmirx0"
@@ -42,6 +43,7 @@ class DiscoveryManager:
             "audio_inputs": await self._discover_audio_inputs(),
             "encoders": await self._discover_encoders(),
             "custom_plugins": await self._discover_custom_plugins(),
+            "capture_sources": await self._discover_capture_sources(),
             "storage": await self._discover_storage(),
         }
 
@@ -68,10 +70,26 @@ class DiscoveryManager:
         """Discover video input devices."""
         inputs = []
 
+        # vdin devices (v4l2 capture)
         for device_path in VDIN_DEVICES:
             device = Path(device_path)
             if device.exists():
                 info = await self._get_video_device_info(device_path)
+                inputs.append(info)
+
+        # vfm_cap devices (raw frame capture for streamboxsrc Path A)
+        for device_path in VFMCAP_DEVICES:
+            device = Path(device_path)
+            if device.exists():
+                info = {
+                    "device": device_path,
+                    "type": "vfm_cap",
+                    "name": "VFM Capture (Path A)",
+                    "available": True,
+                    "current_signal": None,
+                    "formats": ["raw"],
+                    "note": "Used by streamboxsrc source=vfmcap"
+                }
                 inputs.append(info)
 
         return inputs
@@ -213,7 +231,7 @@ class DiscoveryManager:
     async def _discover_custom_plugins(self) -> List[str]:
         """Discover Amlogic custom GStreamer plugins."""
         plugins = []
-        custom_elements = ["amlge2d", "amlvdec", "amlvideo2"]
+        custom_elements = ["streamboxsrc", "amlge2d", "amlvdec", "amlvideo2"]
 
         for element in custom_elements:
             available = await self._check_gst_element(element)
@@ -237,6 +255,56 @@ class DiscoveryManager:
             return False
         except Exception:
             return False
+
+    async def _discover_capture_sources(self) -> List[Dict[str, Any]]:
+        """Discover available capture source options for the auto configurator.
+        
+        Reports which of the three capture modes are available:
+        - vfmcap: requires streamboxsrc plugin + /dev/video_cap device
+        - vdin1: requires streamboxsrc plugin + /dev/video71 (vdin1)
+        - v4l2_legacy: requires /dev/video71 device
+        """
+        sources = []
+        
+        has_streamboxsrc = await self._check_gst_element("streamboxsrc")
+        has_video_cap = Path("/dev/video_cap").exists()
+        has_video71 = Path("/dev/video71").exists()
+        
+        sources.append({
+            "id": "vfmcap",
+            "name": "Path A: Raw Capture (streamboxsrc vfmcap)",
+            "available": has_streamboxsrc and has_video_cap,
+            "description": "Low-latency raw capture with Vulkan GPU conversion",
+            "default": True,
+            "missing": [] if (has_streamboxsrc and has_video_cap) else (
+                ([] if has_streamboxsrc else ["streamboxsrc plugin"]) +
+                ([] if has_video_cap else ["/dev/video_cap device"])
+            )
+        })
+        
+        sources.append({
+            "id": "vdin1",
+            "name": "Path B: VPP Capture (streamboxsrc vdin1)",
+            "available": has_streamboxsrc and has_video71,
+            "description": "Color-processed capture via Amlogic VPP pipeline",
+            "default": False,
+            "missing": [] if (has_streamboxsrc and has_video71) else (
+                ([] if has_streamboxsrc else ["streamboxsrc plugin"]) +
+                ([] if has_video71 else ["/dev/video71 device"])
+            )
+        })
+        
+        sources.append({
+            "id": "v4l2_legacy",
+            "name": "Legacy: v4l2src (deprecated)",
+            "available": has_video71,
+            "description": "Original v4l2 capture from /dev/video71 (backward compatibility)",
+            "default": False,
+            "deprecated": True,
+            "missing": [] if has_video71 else ["/dev/video71 device"]
+        })
+        
+        return sources
 
     async def _discover_storage(self) -> List[Dict[str, Any]]:
         """Discover available storage locations."""

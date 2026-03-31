@@ -299,8 +299,28 @@ class InstanceManager:
                 instance.error_logs = instance.error_logs[-100:]
 
             if exit_code == 0:
-                logger.info(f"Instance {instance_id} completed normally")
+                # Clean exit (EOS).  For auto instances using streamboxsrc,
+                # exit-code-0 means "HDMI signal changed" — the plugin posts
+                # an hdmi-signal-change message and returns EOS.  We mark the
+                # instance as stopped and notify, then let the event manager
+                # re-trigger on_passthrough_ready() when the new signal
+                # stabilises.  The auto_config.capture_source field tells us
+                # whether this instance used streamboxsrc.
+                is_streamboxsrc = (
+                    instance.instance_type == InstanceType.AUTO
+                    and instance.auto_config
+                    and instance.auto_config.get("capture_source") in ("vfmcap", "vdin1")
+                )
+                if is_streamboxsrc:
+                    logger.info(
+                        f"Instance {instance_id} (streamboxsrc) exited cleanly — "
+                        f"HDMI signal change, awaiting re-stabilisation"
+                    )
+                else:
+                    logger.info(f"Instance {instance_id} completed normally")
                 instance.status = InstanceStatus.STOPPED
+                instance.error_message = None
+                instance.retry_count = 0
                 await self._notify_status_change(instance_id, "stopped")
             elif instance_id in self._stopping_instances:
                 # Intentional stop via stop_instance() - don't treat as error
@@ -331,7 +351,22 @@ class InstanceManager:
         # Auto instances should NOT auto-recover here — they restart
         # through on_passthrough_ready() when HDMI comes back.
         # Auto-recovery would waste retries while the signal is still gone.
+        #
+        # Exception: if the error looks like a streamboxsrc signal-change
+        # (shouldn't happen with exit code != 0, but be defensive), treat
+        # it as a clean stop rather than an error.
         if instance.instance_type == InstanceType.AUTO:
+            if "hdmi-signal-change" in error.lower() or "signal change" in error.lower():
+                logger.info(
+                    f"Auto instance {instance_id} exited with signal-change "
+                    f"indicator — treating as clean stop"
+                )
+                instance.status = InstanceStatus.STOPPED
+                instance.error_message = None
+                instance.retry_count = 0
+                await self._notify_status_change(instance_id, "stopped")
+                return
+            
             logger.info(f"Auto instance {instance_id} failed (will restart on signal): {error[:200]}")
             instance.status = InstanceStatus.ERROR
             instance.error_message = error

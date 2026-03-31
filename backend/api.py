@@ -258,6 +258,7 @@ if DBUS_LIBRARY == "dbus_next":
             
             Args:
                 config_json: JSON with config fields:
+                    - capture_source: str ("vfmcap", "vdin1", "v4l2_legacy")
                     - gop_interval_seconds: float
                     - bitrate_kbps: int
                     - rc_mode: int (0=VBR, 1=CBR, 2=FixQP)
@@ -266,6 +267,7 @@ if DBUS_LIBRARY == "dbus_next":
                     - recording_enabled: bool
                     - recording_path: str
                     - autostart_on_ready: bool
+                    - use_hdr: bool
                     
             Returns:
                 success: True if applied
@@ -274,12 +276,13 @@ if DBUS_LIBRARY == "dbus_next":
                 if not self.auto_instance_manager:
                     return False
                 
-                from auto_instance import AutoInstanceConfig, AudioSource
+                from auto_instance import AutoInstanceConfig, AudioSource, CaptureSource
                 
                 config_data = json.loads(config_json)
                 
                 # Create config object
                 config = AutoInstanceConfig(
+                    capture_source=CaptureSource(config_data.get("capture_source", "vfmcap")),
                     gop_interval_seconds=config_data.get("gop_interval_seconds", 1.0),
                     bitrate_kbps=config_data.get("bitrate_kbps", 20000),
                     rc_mode=config_data.get("rc_mode", 1),
@@ -326,10 +329,11 @@ if DBUS_LIBRARY == "dbus_next":
                 Pipeline string with line breaks
             """
             try:
-                from auto_instance import AutoInstanceConfig, PipelineBuilder, AudioSource
+                from auto_instance import AutoInstanceConfig, PipelineBuilder, AudioSource, CaptureSource
                 
                 config_data = json.loads(config_json)
                 config = AutoInstanceConfig(
+                    capture_source=CaptureSource(config_data.get("capture_source", "vfmcap")),
                     gop_interval_seconds=config_data.get("gop_interval_seconds", 1.0),
                     bitrate_kbps=config_data.get("bitrate_kbps", 20000),
                     rc_mode=config_data.get("rc_mode", 1),

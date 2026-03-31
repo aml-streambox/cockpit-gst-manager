@@ -21,6 +21,7 @@ class AutoConfigurator {
 
     getDefaultConfig() {
         return {
+            capture_source: 'vfmcap',
             gop_interval_seconds: 1.0,
             bitrate_kbps: 20000,
             rc_mode: 1,  // CBR
@@ -53,7 +54,7 @@ class AutoConfigurator {
     setupEventListeners() {
         // Form field changes - auto-preview
         const inputs = [
-            'auto-gop-interval', 'auto-bitrate', 'auto-rc-mode',
+            'auto-capture-source', 'auto-gop-interval', 'auto-bitrate', 'auto-rc-mode',
             'auto-audio-source', 'auto-srt-port',
             'auto-recording-enabled', 'auto-recording-path', 'auto-autostart',
             'auto-use-hdr'
@@ -66,6 +67,15 @@ class AutoConfigurator {
                 el.addEventListener('input', () => this.debouncedUpdate());
             }
         });
+
+        // Capture source change - update hint text
+        const captureSourceEl = document.getElementById('auto-capture-source');
+        if (captureSourceEl) {
+            captureSourceEl.addEventListener('change', (e) => {
+                this.updateCaptureSourceHint(e.target.value);
+                this.updatePreview();
+            });
+        }
 
         // Recording toggle
         const recEnable = document.getElementById('auto-recording-enabled');
@@ -280,6 +290,7 @@ class AutoConfigurator {
             if (el) el.value = value;
         };
 
+        setValue('auto-capture-source', this.config.capture_source || 'vfmcap');
         setValue('auto-gop-interval', this.config.gop_interval_seconds);
         setValue('auto-bitrate', this.config.bitrate_kbps);
         setValue('auto-rc-mode', this.config.rc_mode);
@@ -306,6 +317,25 @@ class AutoConfigurator {
         if (pathGroup) {
             pathGroup.style.display = this.config.recording_enabled ? 'block' : 'none';
         }
+        
+        // Update capture source hint
+        this.updateCaptureSourceHint(this.config.capture_source || 'vfmcap');
+    }
+    
+    updateCaptureSourceHint(source) {
+        const hintEl = document.getElementById('auto-capture-source-hint');
+        if (!hintEl) return;
+        
+        const hints = {
+            'vfmcap': 'Path A: Low-latency raw capture with Vulkan GPU conversion. ' +
+                       'Best for minimal processing overhead. Uses /dev/video_cap.',
+            'vdin1': 'Path B: Captures via Amlogic VPP color processing pipeline. ' +
+                      'NV21 passthrough for SDR, Vulkan AMLY\u2192P010 for HDR. Uses /dev/video71.',
+            'v4l2_legacy': 'Legacy v4l2 capture from /dev/video71. Deprecated \u2014 ' +
+                            'use Path A or B instead for better signal handling and recovery.'
+        };
+        
+        hintEl.textContent = hints[source] || '';
     }
 
     getFormConfig() {
@@ -320,6 +350,7 @@ class AutoConfigurator {
         };
 
         return {
+            capture_source: getValue('auto-capture-source', 'vfmcap'),
             gop_interval_seconds: parseFloat(getValue('auto-gop-interval', '1.0')),
             bitrate_kbps: parseInt(getValue('auto-bitrate', '20000')),
             rc_mode: parseInt(getValue('auto-rc-mode', '1')),
@@ -465,9 +496,18 @@ class AutoConfigurator {
         const hdrStatusEl = document.getElementById('auto-hdr-status');
         const detectedHdrEl = document.getElementById('auto-detected-hdr');
         const useHdrChecked = document.getElementById('auto-use-hdr');
+        const captureSourceEl = document.getElementById('auto-capture-source');
         const hdrEnabled = useHdrChecked ? useHdrChecked.checked : true;
+        const captureSource = captureSourceEl ? captureSourceEl.value : 'vfmcap';
         const sourceIsHdr = state.source_is_hdr || (state.color_depth && state.color_depth >= 10);
         const colorDepth = state.color_depth || 8;
+        
+        // Pipeline mode label depends on capture source
+        const pipelineLabel = {
+            'vfmcap': 'P010 + Vulkan',
+            'vdin1': 'Vulkan AMLY\u2192P010',
+            'v4l2_legacy': 'ENCODED + Vulkan'
+        }[captureSource] || 'Vulkan';
 
         // Badge shows the *pipeline mode* (what will actually run), not just the source
         if (detectedHdrEl) {
@@ -499,10 +539,10 @@ class AutoConfigurator {
                 hdrStatusEl.textContent = 'Source: No signal';
                 hdrStatusEl.className = 'gst-hdr-status';
             } else if (sourceIsHdr && hdrEnabled) {
-                hdrStatusEl.textContent = `HDR ${colorDepth}-bit pipeline active (ENCODED + Vulkan)`;
+                hdrStatusEl.textContent = `HDR ${colorDepth}-bit pipeline active (${pipelineLabel})`;
                 hdrStatusEl.className = 'gst-hdr-status hdr-enabled';
             } else if (!sourceIsHdr && hdrEnabled) {
-                hdrStatusEl.textContent = `SDR source — 10-bit pipeline active (ENCODED + Vulkan)`;
+                hdrStatusEl.textContent = `SDR source \u2014 10-bit pipeline active (${pipelineLabel})`;
                 hdrStatusEl.className = 'gst-hdr-status hdr-enabled';
             } else if (sourceIsHdr && !hdrEnabled) {
                 hdrStatusEl.textContent = `HDR source detected but HDR mode disabled - using SDR pipeline`;

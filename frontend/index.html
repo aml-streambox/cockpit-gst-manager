@@ -109,6 +109,20 @@
                         
                         <!-- Configuration Form -->
                         <div class="gst-auto-config-form">
+                            <h3>Capture Source</h3>
+                            <div class="gst-form-group">
+                                <label for="auto-capture-source">Video Capture Source</label>
+                                <select id="auto-capture-source" class="gst-select">
+                                    <option value="vfmcap" selected>Path A: Raw Capture (streamboxsrc vfmcap) — Default</option>
+                                    <option value="vdin1">Path B: VPP Capture (streamboxsrc vdin1)</option>
+                                    <option value="v4l2_legacy">Legacy: v4l2src /dev/video71 (deprecated)</option>
+                                </select>
+                                <span class="gst-hint" id="auto-capture-source-hint">
+                                    Path A: Low-latency raw capture with Vulkan GPU conversion.
+                                    Path B: Color-processed via Amlogic VPP pipeline.
+                                </span>
+                            </div>
+                            
                             <h3>Video Settings</h3>
                             
                             <label class="gst-toggle-label">

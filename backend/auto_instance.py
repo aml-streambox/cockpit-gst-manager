@@ -1,10 +1,15 @@
 """Auto Instance Manager - Single auto-managed GStreamer instance.
 
 Manages a single auto-generated instance that:
-1. Captures HDMI TX output from /dev/video71
+1. Captures HDMI via streamboxsrc (Path A/B) or legacy v4l2src
 2. Uses dynamic resolution/framerate from HDMI TX
 3. Auto-starts/stops based on HDMI RX/TX state
 4. Supports SRT streaming (always on) + optional recording (MPEG-TS)
+
+Capture sources:
+- vfmcap (Path A): streamboxsrc source=vfmcap — raw/low-latency (default)
+- vdin1 (Path B): streamboxsrc source=vdin1 — color-processed via VPP
+- v4l2_legacy: v4l2src device=/dev/video71 — deprecated, backward compat
 """
 
 import asyncio
@@ -19,6 +24,18 @@ from typing import Optional, Dict, Any
 logger = logging.getLogger("gst-manager.auto_instance")
 
 
+class CaptureSource(Enum):
+    """Video capture source options.
+    
+    vfmcap:     Path A — streamboxsrc source=vfmcap (raw/low-latency, default)
+    vdin1:      Path B — streamboxsrc source=vdin1 (color-processed via VPP)
+    v4l2_legacy: Legacy — v4l2src device=/dev/video71 (deprecated vdin1 capture)
+    """
+    VFMCAP = "vfmcap"          # Path A: raw vfm_cap capture
+    VDIN1 = "vdin1"            # Path B: vdin1 with VPP color processing
+    V4L2_LEGACY = "v4l2_legacy"  # Legacy: v4l2src /dev/video71 (deprecated)
+
+
 class AudioSource(Enum):
     """Audio input source options."""
     HDMI_RX = "hdmi_rx"  # hw:0,6 - HDMI RX loopback audio
@@ -31,6 +48,9 @@ class AutoInstanceConfig:
     
     GOP is calculated as: framerate * gop_interval_seconds
     """
+    # Capture source selection
+    capture_source: CaptureSource = CaptureSource.VFMCAP  # Default: Path A
+    
     # GOP interval in seconds (used to calculate gop = framerate * interval)
     gop_interval_seconds: float = 1.0
     
@@ -67,6 +87,7 @@ class AutoInstanceConfig:
         """Convert to dictionary for JSON serialization."""
         data = asdict(self)
         data["audio_source"] = self.audio_source.value
+        data["capture_source"] = self.capture_source.value
         return data
     
     @classmethod
@@ -74,6 +95,8 @@ class AutoInstanceConfig:
         """Create config from dictionary."""
         if "audio_source" in data and isinstance(data["audio_source"], str):
             data["audio_source"] = AudioSource(data["audio_source"])
+        if "capture_source" in data and isinstance(data["capture_source"], str):
+            data["capture_source"] = CaptureSource(data["capture_source"])
         # Filter out unknown fields
         valid_fields = cls.__dataclass_fields__.keys()
         filtered_data = {k: v for k, v in data.items() if k in valid_fields}
@@ -83,11 +106,22 @@ class AutoInstanceConfig:
 class PipelineBuilder:
     """Builds GStreamer pipeline for auto instance.
     
-    Based on the working command provided:
-    - Video: v4l2src (vdin1 at /dev/video71) -> amlvenc (H.265)
-    - Audio: alsasrc (HDMI RX hw:0,6 or Line In hw:0,0) -> avenc_aac
-    - Muxer: mpegtsmux
-    - Output: srtsink (always) + optional filesink for recording
+    Supports three capture source modes:
+    
+    1. streamboxsrc source=vfmcap (Path A) — Raw vfm_cap capture with Vulkan
+       GPU format conversion.  Always P010 for HDR, NV12 for SDR.
+       
+    2. streamboxsrc source=vdin1 (Path B) — VPP color-processed capture.
+       NV21 passthrough for 8-bit SDR, Vulkan AMLY→P010 for 10-bit HDR.
+       
+    3. v4l2src device=/dev/video71 (Legacy) — Deprecated vdin1 v4l2 capture.
+       NV21 for SDR, ENCODED format for HDR.
+    
+    All modes use:
+    - amlvenc (H.265 hardware encoder)
+    - alsasrc for audio (HDMI RX or Line In)
+    - mpegtsmux for muxing
+    - srtsink for streaming + optional filesink for recording
     """
     
     def build(self, config: AutoInstanceConfig) -> str:
@@ -111,38 +145,15 @@ class PipelineBuilder:
         # matters for the auto-start path in on_passthrough_ready().
         use_hdr_pipeline = config.use_hdr
         
-        # Build pipeline
-        if use_hdr_pipeline:
-            # HDR 10-bit pipeline: ENCODED format + internal-bit-depth=10 + Vulkan backend
-            pipeline = (
-                f'v4l2src device=/dev/video71 io-mode=dmabuf do-timestamp=true ! '
-                f'video/x-raw,format=ENCODED,width={config.width},height={config.height},'
-                f'framerate={config.framerate}/1 ! '
-                f'videorate ! '
-                f'amlvenc internal-bit-depth=10 v10conv-backend=0 '
-                f'gop={gop} gop-pattern=0 bitrate={config.bitrate_kbps} '
-                f'framerate={config.framerate} rc-mode={config.rc_mode} ! '
-                f'video/x-h265 ! '
-                f'h265parse config-interval=-1 ! '
-                f'queue max-size-buffers=30 max-size-time=0 max-size-bytes=0 ! '
-                f'mux. '
-            )
+        # Build video source based on capture source selection
+        if config.capture_source == CaptureSource.VFMCAP:
+            pipeline = self._build_vfmcap_source(config, gop, use_hdr_pipeline)
+        elif config.capture_source == CaptureSource.VDIN1:
+            pipeline = self._build_vdin1_source(config, gop, use_hdr_pipeline)
         else:
-            # SDR 8-bit pipeline: NV21 format (standard)
-            pipeline = (
-                f'v4l2src device=/dev/video71 io-mode=dmabuf do-timestamp=true ! '
-                f'video/x-raw,format=NV21,width={config.width},height={config.height},'
-                f'framerate={config.framerate}/1 ! '
-                f'queue max-size-buffers=30 max-size-time=0 max-size-bytes=0 ! '
-                f'amlvenc gop={gop} gop-pattern=0 framerate={config.framerate} '
-                f'bitrate={config.bitrate_kbps} rc-mode={config.rc_mode} ! '
-                f'video/x-h265 ! '
-                f'h265parse config-interval=-1 ! '
-                f'queue max-size-buffers=30 max-size-time=0 max-size-bytes=0 ! '
-                f'mux. '
-            )
+            pipeline = self._build_v4l2_legacy_source(config, gop, use_hdr_pipeline)
         
-        # Audio branch (same for both SDR/HDR)
+        # Audio branch (same for all capture modes)
         pipeline += (
             f'alsasrc device={audio_device} buffer-time=500000 provide-clock=false '
             f'slave-method=re-timestamp ! '
@@ -173,6 +184,118 @@ class PipelineBuilder:
         
         return pipeline
     
+    def _build_vfmcap_source(
+        self, config: AutoInstanceConfig, gop: int, use_hdr: bool
+    ) -> str:
+        """Build Path A: streamboxsrc source=vfmcap pipeline.
+        
+        Path A always outputs P010_10LE for HDR (Vulkan GPU conversion from
+        raw vfm_cap formats).  For SDR, outputs NV12.
+        """
+        if use_hdr:
+            # HDR 10-bit: P010_10LE via Vulkan conversion
+            return (
+                f'streamboxsrc source=vfmcap output-format=p010 ! '
+                f'video/x-raw,format=P010_10LE,width={config.width},height={config.height},'
+                f'framerate={config.framerate}/1 ! '
+                f'amlvenc internal-bit-depth=10 '
+                f'gop={gop} gop-pattern=0 bitrate={config.bitrate_kbps} '
+                f'framerate={config.framerate} rc-mode={config.rc_mode} ! '
+                f'video/x-h265 ! '
+                f'h265parse config-interval=-1 ! '
+                f'queue max-size-buffers=30 max-size-time=0 max-size-bytes=0 ! '
+                f'mux. '
+            )
+        else:
+            # SDR 8-bit: NV12
+            return (
+                f'streamboxsrc source=vfmcap output-format=nv12 ! '
+                f'video/x-raw,format=NV12,width={config.width},height={config.height},'
+                f'framerate={config.framerate}/1 ! '
+                f'queue max-size-buffers=30 max-size-time=0 max-size-bytes=0 ! '
+                f'amlvenc gop={gop} gop-pattern=0 framerate={config.framerate} '
+                f'bitrate={config.bitrate_kbps} rc-mode={config.rc_mode} ! '
+                f'video/x-h265 ! '
+                f'h265parse config-interval=-1 ! '
+                f'queue max-size-buffers=30 max-size-time=0 max-size-bytes=0 ! '
+                f'mux. '
+            )
+    
+    def _build_vdin1_source(
+        self, config: AutoInstanceConfig, gop: int, use_hdr: bool
+    ) -> str:
+        """Build Path B: streamboxsrc source=vdin1 pipeline.
+        
+        Path B auto-detects signal depth.  For 8-bit SDR, outputs NV21
+        passthrough.  For 10-bit HDR, Vulkan converts AMLY→P010.
+        """
+        if use_hdr:
+            # HDR 10-bit: Vulkan AMLY→P010 conversion
+            return (
+                f'streamboxsrc source=vdin1 output-format=p010 ! '
+                f'video/x-raw,format=P010_10LE,width={config.width},height={config.height},'
+                f'framerate={config.framerate}/1 ! '
+                f'amlvenc internal-bit-depth=10 '
+                f'gop={gop} gop-pattern=0 bitrate={config.bitrate_kbps} '
+                f'framerate={config.framerate} rc-mode={config.rc_mode} ! '
+                f'video/x-h265 ! '
+                f'h265parse config-interval=-1 ! '
+                f'queue max-size-buffers=30 max-size-time=0 max-size-bytes=0 ! '
+                f'mux. '
+            )
+        else:
+            # SDR 8-bit: NV21 passthrough (no GPU conversion needed)
+            return (
+                f'streamboxsrc source=vdin1 ! '
+                f'video/x-raw,format=NV21,width={config.width},height={config.height},'
+                f'framerate={config.framerate}/1 ! '
+                f'queue max-size-buffers=30 max-size-time=0 max-size-bytes=0 ! '
+                f'amlvenc gop={gop} gop-pattern=0 framerate={config.framerate} '
+                f'bitrate={config.bitrate_kbps} rc-mode={config.rc_mode} ! '
+                f'video/x-h265 ! '
+                f'h265parse config-interval=-1 ! '
+                f'queue max-size-buffers=30 max-size-time=0 max-size-bytes=0 ! '
+                f'mux. '
+            )
+    
+    def _build_v4l2_legacy_source(
+        self, config: AutoInstanceConfig, gop: int, use_hdr: bool
+    ) -> str:
+        """Build Legacy: v4l2src device=/dev/video71 pipeline (deprecated).
+        
+        Original v4l2 capture path.  Uses ENCODED format for HDR, NV21 for SDR.
+        Kept for backward compatibility but deprecated in favor of streamboxsrc.
+        """
+        if use_hdr:
+            # HDR 10-bit pipeline: ENCODED format + internal-bit-depth=10 + Vulkan backend
+            return (
+                f'v4l2src device=/dev/video71 io-mode=dmabuf do-timestamp=true ! '
+                f'video/x-raw,format=ENCODED,width={config.width},height={config.height},'
+                f'framerate={config.framerate}/1 ! '
+                f'videorate ! '
+                f'amlvenc internal-bit-depth=10 v10conv-backend=0 '
+                f'gop={gop} gop-pattern=0 bitrate={config.bitrate_kbps} '
+                f'framerate={config.framerate} rc-mode={config.rc_mode} ! '
+                f'video/x-h265 ! '
+                f'h265parse config-interval=-1 ! '
+                f'queue max-size-buffers=30 max-size-time=0 max-size-bytes=0 ! '
+                f'mux. '
+            )
+        else:
+            # SDR 8-bit pipeline: NV21 format (standard)
+            return (
+                f'v4l2src device=/dev/video71 io-mode=dmabuf do-timestamp=true ! '
+                f'video/x-raw,format=NV21,width={config.width},height={config.height},'
+                f'framerate={config.framerate}/1 ! '
+                f'queue max-size-buffers=30 max-size-time=0 max-size-bytes=0 ! '
+                f'amlvenc gop={gop} gop-pattern=0 framerate={config.framerate} '
+                f'bitrate={config.bitrate_kbps} rc-mode={config.rc_mode} ! '
+                f'video/x-h265 ! '
+                f'h265parse config-interval=-1 ! '
+                f'queue max-size-buffers=30 max-size-time=0 max-size-bytes=0 ! '
+                f'mux. '
+            )
+    
     def build_preview(self, config: AutoInstanceConfig) -> str:
         """Build pipeline preview with line breaks for readability."""
         pipeline = self.build(config)
@@ -193,6 +316,7 @@ class AutoInstanceManager:
     
     # Default configuration for out-of-box experience
     DEFAULT_CONFIG = AutoInstanceConfig(
+        capture_source=CaptureSource.VFMCAP,  # Path A: raw/low-latency
         gop_interval_seconds=1.0,
         bitrate_kbps=20000,
         rc_mode=1,  # CBR
@@ -493,6 +617,8 @@ class AutoInstanceManager:
             return False
         
         # Apply updates
+        if "capture_source" in updates:
+            self.config.capture_source = CaptureSource(updates["capture_source"])
         if "gop_interval_seconds" in updates:
             self.config.gop_interval_seconds = float(updates["gop_interval_seconds"])
         if "bitrate_kbps" in updates:
