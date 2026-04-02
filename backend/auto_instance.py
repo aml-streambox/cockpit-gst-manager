@@ -512,18 +512,30 @@ class AutoInstanceManager:
             self.config.source_is_hdr = source_is_hdr
         
         # For auto-start, gate HDR on actual source capability:
-        # user wants HDR (use_hdr=True) but source is SDR → use SDR pipeline.
+        # user wants HDR (use_hdr=True) but source is SDR -> use SDR pipeline.
         # We temporarily adjust use_hdr for pipeline generation, then restore it
         # so the saved preference is preserved.
         original_use_hdr = self.config.use_hdr
         if self.config.use_hdr and not source_is_hdr:
             logger.info("Auto-start: source is not HDR, falling back to SDR pipeline")
             self.config.use_hdr = False
+
+        desired_config = AutoInstanceConfig.from_dict(self.config.to_dict())
+        desired_pipeline = self._builder.build(desired_config)
         
-        # If instance exists and is not running, recreate with new pipeline
+        # Recreate the auto instance whenever the desired HDMI-driven pipeline
+        # differs from the currently managed one. This is critical for HDMI
+        # mode changes where passthrough stays logically ready but the old
+        # pipeline exits shortly afterward due to a resolution/framerate change.
         if self.instance_id:
             instance = self.instance_manager.get_instance(self.instance_id)
-            if instance and instance.status.value in ("stopped", "error"):
+            if instance and instance.pipeline != desired_pipeline:
+                logger.info(
+                    "Auto instance pipeline no longer matches current HDMI state; "
+                    "recreating for new parameters"
+                )
+                await self.create_or_update(self.config, hdmi_tx_status)
+            elif instance and instance.status.value in ("stopped", "error"):
                 logger.info(f"Recreating auto instance (was {instance.status.value}) with updated resolution")
                 await self.create_or_update(self.config, hdmi_tx_status)
             elif not instance:
@@ -556,6 +568,15 @@ class AutoInstanceManager:
                         logger.warning("Passthrough lost during stabilization delay, aborting start")
                         return
                 
+                instance = self.instance_manager.get_instance(self.instance_id)
+                if not instance:
+                    logger.warning("Auto instance disappeared before start")
+                    return
+
+                if instance.status.value == "running":
+                    logger.info(f"Auto instance {self.instance_id} already running with current pipeline")
+                    return
+
                 await self.instance_manager.start_instance(self.instance_id)
                 logger.info(f"Auto-started instance {self.instance_id}")
             except Exception as e:
