@@ -238,6 +238,32 @@ body {
     padding: var(--gst-spacing-md);
 }
 
+.gst-instance-toolbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: var(--gst-spacing-md);
+    padding: var(--gst-spacing-md);
+    border-bottom: 1px solid var(--gst-color-border);
+}
+
+.gst-instance-toolbar-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--gst-spacing-sm);
+    align-items: center;
+}
+
+.gst-select-sm {
+    min-width: 150px;
+    padding: var(--gst-spacing-sm);
+}
+
+.gst-category-editor-panel {
+    border-top: 1px solid var(--gst-color-border);
+    padding: var(--gst-spacing-md);
+}
+
 .gst-instance-card {
     padding: var(--gst-spacing-md);
     margin-bottom: var(--gst-spacing-sm);
@@ -1229,6 +1255,14 @@ body {
     background-color: var(--gst-color-info);
 }
 
+.gst-badge.uvc {
+    background-color: var(--gst-color-success);
+}
+
+.gst-badge.custom {
+    background-color: #7e22ce;
+}
+
 
 /* Auto Instance Status Display */
 .gst-auto-instance-status {
@@ -1422,6 +1456,14 @@ body {
 .notification.error { background: var(--gst-color-danger); }
 
 @media (max-width: 900px) {
+    .gst-instance-toolbar {
+        flex-direction: column;
+    }
+
+    .gst-instance-toolbar-actions {
+        width: 100%;
+    }
+
     .uvc-layout {
         grid-template-columns: 1fr;
     }

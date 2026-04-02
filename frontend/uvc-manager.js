@@ -7,8 +7,12 @@
 
 const UVCManager = {
     // Current state
+    initialized: false,
     devices: [],
     selectedDevice: null,
+    editingInstanceId: null,
+    editingInstanceName: '',
+    editingDevicePath: '',
     currentConfig: {
         format: 'auto',
         width: 1920,
@@ -51,8 +55,155 @@ const UVCManager = {
      * Initialize the UVC manager
      */
     init() {
+        if (!this.initialized) {
+            this.render();
+            this.initialized = true;
+        }
         this.discoverDevices();
-        this.render();
+    },
+
+    getDefaultConfig() {
+        return {
+            format: 'auto',
+            width: 1920,
+            height: 1080,
+            fps: 30,
+            encoder: 'h265',
+            bitrate: 4000,
+            outputType: 'srt',
+            outputConfig: {
+                port: 8889,
+                host: '',
+                mode: 'listener'
+            }
+        };
+    },
+
+    openEditor(instance = null) {
+        if (!instance) {
+            this.editingInstanceId = null;
+            this.editingInstanceName = '';
+            this.editingDevicePath = '';
+            this.selectedDevice = null;
+            this.currentConfig = this.getDefaultConfig();
+            this.renderDeviceList();
+            this.renderDeviceDetails();
+            return;
+        }
+
+        const cfg = instance.uvc_config || {};
+        this.editingInstanceId = instance.id;
+        this.editingInstanceName = instance.name || '';
+        this.editingDevicePath = cfg.device_path || '';
+        this.currentConfig = {
+            format: cfg.format_type || 'auto',
+            width: cfg.width || 1920,
+            height: cfg.height || 1080,
+            fps: cfg.fps || 30,
+            encoder: cfg.encoder || 'h265',
+            bitrate: Math.max(1, Math.round((cfg.bitrate || 4000000) / 1000)),
+            outputType: cfg.output_type || 'srt',
+            outputConfig: {
+                port: cfg.output_config?.port || 8889,
+                host: cfg.output_config?.host || '',
+                mode: cfg.output_config?.mode || 'listener',
+                url: cfg.output_config?.url || 'rtmp://localhost/live/stream',
+                path: cfg.output_config?.path || '/mnt/sdcard/uvc_recording.ts'
+            }
+        };
+
+        this.selectedDevice = this.devices.find((d) => d.device_path === this.editingDevicePath) || null;
+        this.renderDeviceList();
+        this.renderDeviceDetails();
+    },
+
+    bindEvents() {
+        const container = document.getElementById('uvc-content');
+        if (!container || container.dataset.bound === 'true') return;
+
+        container.addEventListener('click', (event) => {
+            const refreshBtn = event.target.closest('#uvc-refresh-btn');
+            if (refreshBtn) {
+                this.refreshDevices();
+                return;
+            }
+
+            const createBtn = event.target.closest('#uvc-create-btn');
+            if (createBtn) {
+                this.createInstance();
+                return;
+            }
+
+            const deviceItem = event.target.closest('.uvc-device-item');
+            if (deviceItem && deviceItem.dataset.devicePath) {
+                this.selectDevice(deviceItem.dataset.devicePath);
+            }
+        });
+
+        container.addEventListener('change', (event) => {
+            const target = event.target;
+            if (!(target instanceof HTMLElement)) return;
+
+            switch (target.id) {
+            case 'uvc-format':
+                this.updateConfig('format', target.value);
+                break;
+            case 'uvc-resolution':
+                this.updateResolution(target.value);
+                break;
+            case 'uvc-width':
+                this.updateConfig('width', parseInt(target.value, 10));
+                break;
+            case 'uvc-height':
+                this.updateConfig('height', parseInt(target.value, 10));
+                break;
+            case 'uvc-fps':
+                this.updateConfig('fps', parseInt(target.value, 10));
+                break;
+            case 'uvc-encoder':
+                this.updateConfig('encoder', target.value);
+                this.renderDeviceDetails();
+                break;
+            case 'uvc-output':
+                this.updateConfig('outputType', target.value);
+                this.renderDeviceDetails();
+                break;
+            case 'uvc-srt-port':
+                this.updateConfig('output.port', parseInt(target.value, 10));
+                break;
+            case 'uvc-srt-mode':
+                this.updateConfig('output.mode', target.value);
+                this.renderOutputConfig();
+                break;
+            case 'uvc-srt-host':
+                this.updateConfig('output.host', target.value);
+                break;
+            case 'uvc-rtmp-url':
+                this.updateConfig('output.url', target.value);
+                break;
+            case 'uvc-file-path':
+                this.updateConfig('output.path', target.value);
+                break;
+            default:
+                break;
+            }
+        });
+
+        container.addEventListener('input', (event) => {
+            const target = event.target;
+            if (!(target instanceof HTMLElement)) return;
+
+            if (target.id === 'uvc-bitrate') {
+                const value = parseInt(target.value, 10);
+                this.updateConfig('bitrate', value);
+                const display = document.getElementById('bitrate-display');
+                if (display) {
+                    display.textContent = `${value} kbps`;
+                }
+            }
+        });
+
+        container.dataset.bound = 'true';
     },
 
     /**
@@ -63,7 +214,11 @@ const UVCManager = {
             const result = await callMethod("GetUVCDevices");
             
             this.devices = JSON.parse(result);
+            if (this.editingDevicePath) {
+                this.selectedDevice = this.devices.find(d => d.device_path === this.editingDevicePath) || this.selectedDevice;
+            }
             this.renderDeviceList();
+            this.renderDeviceDetails();
             
             if (this.devices.length === 0) {
                 this.showNotification('No UVC devices found', 'info');
@@ -88,7 +243,11 @@ const UVCManager = {
             const result = await callMethod("RefreshUVCDevices");
             
             this.devices = JSON.parse(result);
+            if (this.editingDevicePath) {
+                this.selectedDevice = this.devices.find(d => d.device_path === this.editingDevicePath) || this.selectedDevice;
+            }
             this.renderDeviceList();
+            this.renderDeviceDetails();
             
             if (this.devices.length > 0) {
                 this.showNotification(`Found ${this.devices.length} UVC device(s)`, 'success');
@@ -111,6 +270,7 @@ const UVCManager = {
      */
     selectDevice(devicePath) {
         this.selectedDevice = this.devices.find(d => d.device_path === devicePath);
+        this.editingDevicePath = devicePath;
         this.renderDeviceDetails();
         this.updatePipelinePreview();
     },
@@ -185,23 +345,37 @@ const UVCManager = {
 
         const btn = document.getElementById('uvc-create-btn');
         btn.disabled = true;
-        btn.textContent = 'Creating...';
+        btn.textContent = this.editingInstanceId ? 'Saving...' : 'Creating...';
 
         try {
             const outputConfig = JSON.stringify(this.currentConfig.outputConfig);
 
             const result = await callMethod(
-                "CreateUVCInstance",
-                name,
-                this.selectedDevice.device_path,
-                this.currentConfig.format,
-                this.currentConfig.width,
-                this.currentConfig.height,
-                this.currentConfig.fps,
-                this.currentConfig.encoder,
-                this.currentConfig.bitrate * 1000,
-                this.currentConfig.outputType,
-                outputConfig
+                this.editingInstanceId ? "UpdateUVCInstance" : "CreateUVCInstance",
+                ...(this.editingInstanceId ? [
+                    this.editingInstanceId,
+                    name,
+                    this.selectedDevice.device_path,
+                    this.currentConfig.format,
+                    this.currentConfig.width,
+                    this.currentConfig.height,
+                    this.currentConfig.fps,
+                    this.currentConfig.encoder,
+                    this.currentConfig.bitrate * 1000,
+                    this.currentConfig.outputType,
+                    outputConfig
+                ] : [
+                    name,
+                    this.selectedDevice.device_path,
+                    this.currentConfig.format,
+                    this.currentConfig.width,
+                    this.currentConfig.height,
+                    this.currentConfig.fps,
+                    this.currentConfig.encoder,
+                    this.currentConfig.bitrate * 1000,
+                    this.currentConfig.outputType,
+                    outputConfig
+                ])
             );
 
             const response = JSON.parse(result);
@@ -214,18 +388,17 @@ const UVCManager = {
                     await refreshInstances();
                 }
                 this.showNotification(
-                    `Instance created and started: ${response.instance_id}`, 
+                    `${this.editingInstanceId ? 'Instance updated and started' : 'Instance created and started'}: ${response.instance_id}`, 
                     'success'
                 );
-                // Clear the name field
-                document.getElementById('uvc-instance-name').value = '';
+                this.editingInstanceId = response.instance_id;
             }
         } catch (error) {
             console.error('Failed to create UVC instance:', error);
             this.showNotification('Failed to create instance', 'error');
         } finally {
             btn.disabled = false;
-            btn.textContent = 'Create Instance';
+            btn.textContent = this.editingInstanceId ? 'Save UVC Instance' : 'Create Instance';
         }
     },
 
@@ -240,7 +413,7 @@ const UVCManager = {
             <div class="uvc-manager">
                 <div class="uvc-header">
                     <h2>UVC Devices</h2>
-                    <button id="uvc-refresh-btn" class="btn" onclick="UVCManager.refreshDevices()">
+                    <button id="uvc-refresh-btn" class="btn">
                         🔄 Refresh
                     </button>
                 </div>
@@ -263,6 +436,7 @@ const UVCManager = {
             </div>
         `;
 
+        this.bindEvents();
         this.renderDeviceList();
         this.renderDeviceDetails();
     },
@@ -281,7 +455,7 @@ const UVCManager = {
 
         list.innerHTML = this.devices.map(device => `
             <div class="uvc-device-item ${this.selectedDevice?.device_path === device.device_path ? 'selected' : ''}"
-                 onclick="UVCManager.selectDevice('${device.device_path}')">
+                 data-device-path="${this.escapeHtml(device.device_path)}">
                 <div class="device-icon">📹</div>
                 <div class="device-info">
                     <div class="device-name">${this.escapeHtml(device.name)}</div>
@@ -342,12 +516,12 @@ const UVCManager = {
                     <label>Instance Name:</label>
                     <input type="text" id="uvc-instance-name" 
                            placeholder="My UVC Camera"
-                           value="${this.escapeHtml(this.selectedDevice.name)} Pipeline">
+                           value="${this.escapeHtml(this.editingInstanceName || (this.selectedDevice.name + ' Pipeline'))}">
                 </div>
 
                 <div class="form-group">
                     <label>Input Format:</label>
-                    <select id="uvc-format" onchange="UVCManager.updateConfig('format', this.value)">
+                    <select id="uvc-format">
                         ${availableFormats.map(([key, opt]) => `
                             <option value="${key}" ${this.currentConfig.format === key ? 'selected' : ''}>
                                 ${opt.label}
@@ -359,7 +533,7 @@ const UVCManager = {
                 <div class="form-row">
                     <div class="form-group">
                         <label>Resolution:</label>
-                        <select id="uvc-resolution" onchange="UVCManager.updateResolution(this.value)">
+                        <select id="uvc-resolution">
                             <option value="1920x1080" ${this.currentConfig.width === 1920 ? 'selected' : ''}>1920x1080 (Full HD)</option>
                             <option value="1280x720" ${this.currentConfig.width === 1280 ? 'selected' : ''}>1280x720 (HD)</option>
                             <option value="640x480" ${this.currentConfig.width === 640 ? 'selected' : ''}>640x480 (VGA)</option>
@@ -367,14 +541,12 @@ const UVCManager = {
                         </select>
                     </div>
                     
-                    <div class="form-group" id="uvc-custom-res" style="display: ${this.currentConfig.width === 1920 || this.currentConfig.width === 1280 || this.currentConfig.width === 640 ? 'none' : 'block'}">
+                     <div class="form-group" id="uvc-custom-res" style="display: ${this.currentConfig.width === 1920 || this.currentConfig.width === 1280 || this.currentConfig.width === 640 ? 'none' : 'block'}">
                         <label>Custom Resolution:</label>
                         <input type="number" id="uvc-width" value="${this.currentConfig.width}" 
-                               onchange="UVCManager.updateConfig('width', parseInt(this.value))"
                                placeholder="Width" style="width: 80px;">
                         <span>x</span>
                         <input type="number" id="uvc-height" value="${this.currentConfig.height}"
-                               onchange="UVCManager.updateConfig('height', parseInt(this.value))"
                                placeholder="Height" style="width: 80px;">
                     </div>
                 </div>
@@ -382,14 +554,13 @@ const UVCManager = {
                 <div class="form-group">
                     <label>Framerate:</label>
                     <input type="number" id="uvc-fps" value="${this.currentConfig.fps}"
-                           onchange="UVCManager.updateConfig('fps', parseInt(this.value))"
                            min="1" max="120" style="width: 80px;">
                     <span>FPS</span>
                 </div>
 
                 <div class="form-group">
                     <label>Encoder:</label>
-                    <select id="uvc-encoder" onchange="UVCManager.updateConfig('encoder', this.value)">
+                    <select id="uvc-encoder">
                         ${this.ENCODER_OPTIONS.map(opt => `
                             <option value="${opt.value}" ${this.currentConfig.encoder === opt.value ? 'selected' : ''}>
                                 ${opt.label}
@@ -401,14 +572,13 @@ const UVCManager = {
                 <div class="form-group" id="uvc-bitrate-group" style="display: ${this.currentConfig.encoder === 'none' ? 'none' : 'block'}">
                     <label>Bitrate:</label>
                     <input type="range" id="uvc-bitrate" 
-                           value="${this.currentConfig.bitrate}" min="1000" max="50000" step="1000"
-                           oninput="UVCManager.updateConfig('bitrate', parseInt(this.value)); document.getElementById('bitrate-display').textContent = this.value + ' kbps'">
+                           value="${this.currentConfig.bitrate}" min="1000" max="50000" step="1000">
                     <span id="bitrate-display">${this.currentConfig.bitrate} kbps</span>
                 </div>
 
                 <div class="form-group">
                     <label>Output:</label>
-                    <select id="uvc-output" onchange="UVCManager.updateConfig('outputType', this.value); UVCManager.renderOutputConfig()">
+                    <select id="uvc-output">
                         ${this.OUTPUT_OPTIONS.map(opt => `
                             <option value="${opt.value}" ${this.currentConfig.outputType === opt.value ? 'selected' : ''}>
                                 ${opt.label}
@@ -428,8 +598,8 @@ const UVCManager = {
             <div class="pipeline-section">
                 <h4>Pipeline Preview</h4>
                 <pre id="uvc-pipeline-preview" class="pipeline-preview">Select a device to see pipeline preview</pre>
-                <button id="uvc-create-btn" class="btn btn-primary" onclick="UVCManager.createInstance()">
-                    Create Instance
+                <button id="uvc-create-btn" class="btn btn-primary">
+                    ${this.editingInstanceId ? 'Save UVC Instance' : 'Create Instance'}
                 </button>
             </div>
         `;
@@ -450,30 +620,27 @@ const UVCManager = {
             container.innerHTML = `
                 <div class="form-group">
                     <label>SRT Port:</label>
-                    <input type="number" value="${this.currentConfig.outputConfig.port || 8889}"
-                           onchange="UVCManager.updateConfig('output.port', parseInt(this.value))"
+                    <input type="number" id="uvc-srt-port" value="${this.currentConfig.outputConfig.port || 8889}"
                            min="1024" max="65535">
                 </div>
                 <div class="form-group">
                     <label>SRT Mode:</label>
-                    <select onchange="UVCManager.updateConfig('output.mode', this.value); UVCManager.renderOutputConfig();">
+                    <select id="uvc-srt-mode">
                         <option value="listener" ${this.currentConfig.outputConfig.mode === 'listener' ? 'selected' : ''}>Listener (Server)</option>
                         <option value="caller" ${this.currentConfig.outputConfig.mode === 'caller' ? 'selected' : ''}>Caller (Client)</option>
                     </select>
                 </div>
-                 <div class="form-group" style="display: ${this.currentConfig.outputConfig.mode === 'caller' ? 'block' : 'none'}">
-                     <label>SRT Host:</label>
-                     <input type="text" value="${this.currentConfig.outputConfig.host || ''}"
-                            onchange="UVCManager.updateConfig('output.host', this.value)"
-                            placeholder="192.168.12.121">
-                 </div>
-             `;
+                  <div class="form-group" style="display: ${this.currentConfig.outputConfig.mode === 'caller' ? 'block' : 'none'}">
+                      <label>SRT Host:</label>
+                      <input type="text" id="uvc-srt-host" value="${this.currentConfig.outputConfig.host || ''}"
+                             placeholder="192.168.12.121">
+                  </div>
+              `;
         } else if (outputType === 'rtmp') {
             container.innerHTML = `
                 <div class="form-group">
                     <label>RTMP URL:</label>
-                    <input type="text" value="${this.currentConfig.outputConfig.url || 'rtmp://localhost/live/stream'}"
-                           onchange="UVCManager.updateConfig('output.url', this.value)"
+                    <input type="text" id="uvc-rtmp-url" value="${this.currentConfig.outputConfig.url || 'rtmp://localhost/live/stream'}"
                            placeholder="rtmp://server/live/streamkey" style="width: 100%;">
                 </div>
             `;
@@ -481,8 +648,7 @@ const UVCManager = {
             container.innerHTML = `
                 <div class="form-group">
                     <label>File Path:</label>
-                    <input type="text" value="${this.currentConfig.outputConfig.path || '/mnt/sdcard/uvc_recording.ts'}"
-                           onchange="UVCManager.updateConfig('output.path', this.value)"
+                    <input type="text" id="uvc-file-path" value="${this.currentConfig.outputConfig.path || '/mnt/sdcard/uvc_recording.ts'}"
                            placeholder="/path/to/recording.ts" style="width: 100%;">
                 </div>
             `;

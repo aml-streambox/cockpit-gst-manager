@@ -321,6 +321,70 @@ if DBUS_LIBRARY == "dbus_next":
                 return json.dumps({"error": str(e)})
 
         @method()
+        async def UpdateUVCInstance(
+            self,
+            instance_id: "s",
+            name: "s",
+            device_path: "s",
+            format_type: "s",
+            width: "i",
+            height: "i",
+            fps: "i",
+            encoder: "s",
+            bitrate: "i",
+            output_type: "s",
+            output_config_json: "s"
+        ) -> "s":
+            """Update an existing UVC device pipeline instance."""
+            try:
+                from uvc_utils import UVCDiscovery, UVCPipelineBuilder
+                from instances import InstanceType
+
+                instance = self.instance_manager.get_instance(instance_id)
+                if not instance:
+                    return json.dumps({"error": f"Instance {instance_id} not found"})
+
+                discovery = UVCDiscovery()
+                devices = await discovery.discover()
+                device = next((d for d in devices if d.device_path == device_path), None)
+                if not device:
+                    return json.dumps({"error": f"Device {device_path} not found"})
+
+                output_config = json.loads(output_config_json) if output_config_json else {}
+                builder = UVCPipelineBuilder(device)
+                pipeline = builder.build_pipeline(
+                    format_type=format_type,
+                    width=width,
+                    height=height,
+                    fps=fps,
+                    encoder=encoder,
+                    bitrate=bitrate,
+                    output_type=output_type,
+                    output_config=output_config
+                )
+
+                instance.name = name
+                instance.pipeline = pipeline
+                instance.instance_type = InstanceType.UVC
+                instance.uvc_config = {
+                    "device_path": device_path,
+                    "format_type": format_type,
+                    "width": width,
+                    "height": height,
+                    "fps": fps,
+                    "encoder": encoder,
+                    "bitrate": bitrate,
+                    "output_type": output_type,
+                    "output_config": output_config
+                }
+
+                await self.history_manager.save_instance(instance.to_dict())
+                return json.dumps({"instance_id": instance_id, "pipeline": pipeline})
+            except Exception as e:
+                logger.error(f"UpdateUVCInstance failed: {e}")
+                return json.dumps({"error": str(e)})
+
+        @method()
         async def GetUVCDevicePipeline(
             self,
             device_path: "s",

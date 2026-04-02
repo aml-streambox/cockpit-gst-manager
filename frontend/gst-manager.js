@@ -16,6 +16,7 @@ const state = {
     hdmiStatus: null,
     selectedInstance: null,
     editingInstance: null,
+    instanceFilter: "all",
     aiProviders: [],
     editingProvider: null,
     dbus: null
@@ -50,17 +51,26 @@ function setupEventHandlers() {
     // Header buttons
     document.getElementById("btn-refresh").addEventListener("click", refreshAll);
     document.getElementById("btn-new-instance").addEventListener("click", showNewInstanceEditor);
+    document.getElementById("btn-new-instance-inline").addEventListener("click", showNewInstanceEditor);
+    document.getElementById("btn-open-auto-manager").addEventListener("click", showAutoManager);
+    document.getElementById("btn-open-uvc-manager").addEventListener("click", showNewUvcEditor);
     document.getElementById("btn-settings").addEventListener("click", showSettings);
+    document.getElementById("instance-category-filter").addEventListener("change", (e) => {
+        state.instanceFilter = e.target.value;
+        renderInstancesList();
+    });
 
     // Editor buttons
     document.getElementById("btn-close-editor").addEventListener("click", hideEditor);
     document.getElementById("btn-cancel-edit").addEventListener("click", hideEditor);
     document.getElementById("btn-save-instance").addEventListener("click", saveInstance);
+    document.getElementById("btn-close-auto-manager").addEventListener("click", hideCategoryEditors);
 
     // Detail view buttons
     document.getElementById("btn-close-detail").addEventListener("click", hideDetail);
     document.getElementById("btn-start-instance").addEventListener("click", startSelectedInstance);
     document.getElementById("btn-stop-instance").addEventListener("click", stopSelectedInstance);
+    document.getElementById("btn-restart-instance").addEventListener("click", restartSelectedInstance);
     document.getElementById("btn-edit-instance").addEventListener("click", editSelectedInstance);
     document.getElementById("btn-delete-instance").addEventListener("click", deleteSelectedInstance);
     document.getElementById("btn-clear-logs").addEventListener("click", clearLogs);
@@ -74,31 +84,6 @@ function setupEventHandlers() {
     document.getElementById("btn-add-provider").addEventListener("click", addAiProvider);
     document.getElementById("btn-cancel-provider").addEventListener("click", cancelEditProvider);
     
-    // Tab switching
-    document.querySelectorAll('.gst-tab-btn').forEach(btn => {
-        btn.addEventListener('click', (e) => {
-            const tab = e.target.dataset.tab;
-            switchTab(tab);
-        });
-    });
-}
-
-function switchTab(tab) {
-    // Update button states
-    document.querySelectorAll('.gst-tab-btn').forEach(btn => {
-        btn.classList.toggle('active', btn.dataset.tab === tab);
-    });
-    
-    // Update content visibility
-    document.querySelectorAll('.gst-tab-content').forEach(content => {
-        content.classList.toggle('active', content.id === `tab-${tab}`);
-        content.style.display = content.id === `tab-${tab}` ? 'block' : 'none';
-    });
-    
-    // Initialize UVC manager when UVC tab is selected
-    if (tab === 'uvc' && typeof UVCManager !== 'undefined') {
-        UVCManager.init();
-    }
 }
 
 function subscribeToSignals() {
@@ -210,27 +195,26 @@ async function callMethod(method, ...args) {
 // Rendering functions
 
 function renderInstancesList() {
-    // Get active tab
-    const activeTab = document.querySelector('.gst-tab-btn.active')?.dataset.tab || 'auto';
-    
-    // Filter instances by type
-    const autoInstances = state.instances.filter(i => i.instance_type === 'auto');
-    const customInstances = state.instances.filter(i => i.instance_type !== 'auto');
-    
-    // Render based on active tab
-    if (activeTab === 'auto') {
-        // Auto instances are managed via the auto configurator panel
-        // We don't render them in a list here
-    } else {
-        // Render custom instances
-        const container = document.getElementById("instances-list");
-        
-        if (customInstances.length === 0) {
-            container.innerHTML = '<p class="gst-empty-state">No custom instances configured</p>';
-            return;
-        }
+    const container = document.getElementById("instances-list");
+    const filteredInstances = state.instances.filter((instance) => {
+        const category = getInstanceCategory(instance);
+        return state.instanceFilter === "all" || category === state.instanceFilter;
+    });
 
-        container.innerHTML = customInstances.map(instance => `
+    if (filteredInstances.length === 0) {
+        container.innerHTML = `<p class="gst-empty-state">No ${state.instanceFilter === "all" ? "pipeline" : state.instanceFilter} instances configured</p>`;
+        return;
+    }
+
+    container.innerHTML = filteredInstances.map(instance => {
+        const category = getInstanceCategory(instance);
+        const categoryLabel = {
+            auto: "Auto HDMI",
+            uvc: "UVC",
+            custom: "Custom"
+        }[category];
+
+        return `
             <div class="gst-instance-card ${state.selectedInstance?.id === instance.id ? "selected" : ""}" 
                  data-id="${instance.id}">
                 <div class="gst-instance-header">
@@ -238,17 +222,16 @@ function renderInstancesList() {
                     <span class="gst-status-badge gst-status-${instance.status}">${instance.status}</span>
                 </div>
                 <div class="gst-instance-badges">
-                    ${instance.instance_type === 'uvc' ? '<span class="gst-badge">uvc</span>' : ''}
+                    <span class="gst-badge ${category}">${categoryLabel}</span>
                 </div>
-                <div class="gst-instance-pipeline">${escapeHtml(truncate(instance.pipeline, 80))}</div>
+                <div class="gst-instance-pipeline">${escapeHtml(truncate(instance.pipeline, 120))}</div>
             </div>
-        `).join("");
+        `;
+    }).join("");
 
-        // Add click handlers
-        container.querySelectorAll(".gst-instance-card").forEach(card => {
-            card.addEventListener("click", () => selectInstance(card.dataset.id));
-        });
-    }
+    container.querySelectorAll(".gst-instance-card").forEach(card => {
+        card.addEventListener("click", () => selectInstance(card.dataset.id));
+    });
 }
 
 function renderBoardContext() {
@@ -406,7 +389,8 @@ function updateDetailView() {
     const isRunning = inst.status === "running";
     document.getElementById("btn-start-instance").disabled = isRunning;
     document.getElementById("btn-stop-instance").disabled = !isRunning;
-    document.getElementById("btn-edit-instance").disabled = isRunning || inst.instance_type === 'auto';
+    document.getElementById("btn-restart-instance").disabled = inst.status === "starting" || inst.status === "stopping";
+    document.getElementById("btn-edit-instance").disabled = isRunning && inst.instance_type !== 'auto';
     document.getElementById("btn-delete-instance").disabled = isRunning;
 
     // Fetch uptime
@@ -441,6 +425,7 @@ function selectInstance(instanceId) {
     state.selectedInstance = state.instances.find(i => i.id === instanceId);
     if (state.selectedInstance) {
         hideEditor();
+        hideCategoryEditors();
         updateDetailView();
         document.getElementById("instance-detail").style.display = "block";
         renderInstancesList();  // Update selection highlight
@@ -453,11 +438,51 @@ function showNewInstanceEditor() {
     document.getElementById("instance-name").value = "";
     document.getElementById("instance-pipeline").value = "";
     hideDetail();
+    hideCategoryEditors();
     document.getElementById("pipeline-editor").style.display = "block";
+}
+
+function showAutoManager() {
+    hideDetail();
+    hideEditor();
+    hideCategoryEditors();
+    document.getElementById("auto-editor-panel").style.display = "block";
+    if (window.autoConfigurator) {
+        window.autoConfigurator.populateForm();
+        window.autoConfigurator.updatePreview();
+    }
+}
+
+function showNewUvcEditor() {
+    hideDetail();
+    hideEditor();
+    hideCategoryEditors();
+    document.getElementById("uvc-editor-panel").style.display = "block";
+    if (typeof UVCManager !== "undefined") {
+        UVCManager.init();
+        UVCManager.openEditor();
+    }
 }
 
 function editSelectedInstance() {
     if (!state.selectedInstance) return;
+
+    if (state.selectedInstance.instance_type === "auto") {
+        showAutoManager();
+        return;
+    }
+
+    if (state.selectedInstance.instance_type === "uvc") {
+        hideDetail();
+        hideEditor();
+        hideCategoryEditors();
+        document.getElementById("uvc-editor-panel").style.display = "block";
+        if (typeof UVCManager !== "undefined") {
+            UVCManager.init();
+            UVCManager.openEditor(state.selectedInstance);
+        }
+        return;
+    }
 
     state.editingInstance = state.selectedInstance;
     document.getElementById("editor-title").textContent = "Edit Instance";
@@ -522,6 +547,31 @@ async function stopSelectedInstance() {
     } catch (error) {
         console.error("Failed to stop instance:", error);
         showToast("Failed to stop: " + error.message, "error");
+    }
+}
+
+async function restartSelectedInstance() {
+    if (!state.selectedInstance) return;
+
+    try {
+        if (state.selectedInstance.status === "running") {
+            await callMethod("StopInstance", state.selectedInstance.id);
+            for (let i = 0; i < 20; i++) {
+                await new Promise(resolve => setTimeout(resolve, 500));
+                const result = await callMethod("GetInstanceStatus", state.selectedInstance.id);
+                const status = JSON.parse(result);
+                if (status.status !== "running" && status.status !== "stopping") {
+                    break;
+                }
+            }
+        }
+
+        await callMethod("StartInstance", state.selectedInstance.id);
+        showToast("Instance restarted", "success");
+        await refreshInstances();
+    } catch (error) {
+        console.error("Failed to restart instance:", error);
+        showToast("Failed to restart: " + error.message, "error");
     }
 }
 
@@ -642,6 +692,11 @@ function hideEditor() {
     state.editingInstance = null;
 }
 
+function hideCategoryEditors() {
+    document.getElementById("auto-editor-panel").style.display = "none";
+    document.getElementById("uvc-editor-panel").style.display = "none";
+}
+
 function hideDetail() {
     document.getElementById("instance-detail").style.display = "none";
 }
@@ -676,6 +731,12 @@ function formatUptime(seconds) {
     const hours = Math.floor(seconds / 3600);
     const mins = Math.floor((seconds % 3600) / 60);
     return `${hours}h ${mins}m`;
+}
+
+function getInstanceCategory(instance) {
+    if (instance.instance_type === "auto") return "auto";
+    if (instance.instance_type === "uvc") return "uvc";
+    return "custom";
 }
 
 // Settings functions

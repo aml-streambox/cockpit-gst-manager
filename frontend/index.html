@@ -62,20 +62,29 @@
             <div class="gst-content">
                 <!-- Tabbed interface -->
                 <section class="gst-panel gst-instances-panel">
-                    <div class="gst-tabs">
-                        <button class="gst-tab-btn active" data-tab="auto">
-                            Auto HDMI Capture
-                        </button>
-                        <button class="gst-tab-btn" data-tab="custom">
-                            Custom Instances
-                        </button>
-                        <button class="gst-tab-btn" data-tab="uvc">
-                            UVC Devices
-                        </button>
+                    <div class="gst-instance-toolbar">
+                        <div>
+                            <h2 class="gst-panel-title">Pipeline Instances</h2>
+                            <p class="gst-hint">All managed pipelines in one place. Category badges show Auto HDMI, Custom, and UVC.</p>
+                        </div>
+                        <div class="gst-instance-toolbar-actions">
+                            <select id="instance-category-filter" class="gst-select gst-select-sm">
+                                <option value="all">All categories</option>
+                                <option value="auto">Auto HDMI</option>
+                                <option value="custom">Custom</option>
+                                <option value="uvc">UVC</option>
+                            </select>
+                            <button id="btn-open-auto-manager" class="gst-btn gst-btn-secondary">Auto HDMI</button>
+                            <button id="btn-open-uvc-manager" class="gst-btn gst-btn-secondary">New UVC</button>
+                            <button id="btn-new-instance-inline" class="gst-btn gst-btn-primary">New Custom</button>
+                        </div>
                     </div>
-                    
-                    <!-- Auto Configurator Tab -->
-                    <div id="tab-auto" class="gst-tab-content active">
+
+                    <div id="instances-list" class="gst-instances-list">
+                        <p class="gst-empty-state">No instances configured</p>
+                    </div>
+
+                    <div id="auto-editor-panel" class="gst-category-editor-panel" style="display: none;">
                         <!-- Auto Instance Status -->
                         <div class="gst-auto-instance-status">
                             <h3>Auto Capture Status</h3>
@@ -210,20 +219,13 @@
                         
                         <!-- Actions -->
                         <div class="gst-form-actions">
+                            <button id="btn-close-auto-manager" class="gst-btn gst-btn-secondary">Close</button>
                             <button id="btn-preview-auto" class="gst-btn gst-btn-secondary">Preview</button>
                             <button id="btn-save-auto" class="gst-btn gst-btn-primary">Save Configuration</button>
                         </div>
                     </div>
-                    
-                    <!-- Custom Instances Tab -->
-                    <div id="tab-custom" class="gst-tab-content" style="display: none;">
-                        <div id="instances-list" class="gst-instances-list">
-                            <p class="gst-empty-state">No instances configured</p>
-                        </div>
-                    </div>
-                    
-                    <!-- UVC Devices Tab -->
-                    <div id="tab-uvc" class="gst-tab-content" style="display: none;">
+
+                    <div id="uvc-editor-panel" class="gst-category-editor-panel" style="display: none;">
                         <div id="uvc-content"></div>
                     </div>
                 </section>
@@ -298,6 +300,7 @@
                         <div class="gst-detail-actions">
                             <button id="btn-start-instance" class="gst-btn gst-btn-success">Start</button>
                             <button id="btn-stop-instance" class="gst-btn gst-btn-warning">Stop</button>
+                            <button id="btn-restart-instance" class="gst-btn gst-btn-secondary">Restart</button>
                             <button id="btn-edit-instance" class="gst-btn gst-btn-secondary">Edit</button>
                             <button id="btn-delete-instance" class="gst-btn gst-btn-danger">Delete</button>
                         </div>
