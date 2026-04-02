@@ -193,6 +193,9 @@ class UVCDiscovery:
             
             # Enumerate supported formats
             formats = await self._enumerate_formats(device_path)
+            if not formats:
+                logger.debug(f"{device_path} has no usable capture formats")
+                return None
             
             device = UVCDevice(
                 device_path=device_path,
@@ -255,18 +258,19 @@ class UVCDiscovery:
         }
         
         for line in output.split("\n"):
-            if line.startswith("Driver name"):
-                cap["driver"] = line.split(":", 1)[1].strip()
-            elif line.startswith("Card type"):
-                cap["card"] = line.split(":", 1)[1].strip()
-            elif line.startswith("Bus info"):
-                cap["bus_info"] = line.split(":", 1)[1].strip()
-            elif "Device Caps" in line:
-                # Parse capabilities
-                if "Video Capture" in line:
-                    cap["capabilities"] |= V4L2_CAP_VIDEO_CAPTURE
-                if "Streaming" in line:
-                    cap["capabilities"] |= V4L2_CAP_STREAMING
+            stripped = line.strip()
+            if stripped.startswith("Driver name"):
+                cap["driver"] = stripped.split(":", 1)[1].strip()
+            elif stripped.startswith("Card type"):
+                cap["card"] = stripped.split(":", 1)[1].strip()
+            elif stripped.startswith("Bus info"):
+                cap["bus_info"] = stripped.split(":", 1)[1].strip()
+            elif stripped.startswith("Device Caps") or stripped.startswith("Capabilities"):
+                value = stripped.split(":", 1)[1].strip().split()[0]
+                try:
+                    cap["capabilities"] |= int(value, 16)
+                except ValueError:
+                    logger.debug(f"Failed to parse V4L2 capabilities from line: {stripped}")
         
         return cap
     

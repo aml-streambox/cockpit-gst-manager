@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any, Optional
@@ -37,8 +38,24 @@ class GstManagerDbusClient:
 
     async def call(self, method: str, *args: Any) -> Any:
         await self._ensure_connected()
-        fn = getattr(self._iface, f"call_{method}")
+        fn = None
+        for proxy_method in self._proxy_method_names(method):
+            if hasattr(self._iface, proxy_method):
+                fn = getattr(self._iface, proxy_method)
+                break
+        if fn is None:
+            raise AttributeError(f"No proxy method found for {method}")
         return await fn(*args)
+
+    @staticmethod
+    def _proxy_method_names(method: str) -> list[str]:
+        direct = f"call_{method}"
+        snake = re.sub(r"(.)([A-Z][a-z]+)", r"\1_\2", method)
+        snake = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", snake).lower()
+        snake_name = f"call_{snake}"
+        if snake_name == direct:
+            return [direct]
+        return [direct, snake_name]
 
 
 def _json_or_text(value: Any) -> Any:

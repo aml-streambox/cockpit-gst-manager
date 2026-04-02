@@ -4,8 +4,16 @@ import sys
 from pathlib import Path
 
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT / "backend"))
+HERE = Path(__file__).resolve()
+CANDIDATES = [
+    Path("/usr/lib/gst-manager"),
+    HERE.parent.parent / "backend",
+]
+
+for candidate in CANDIDATES:
+    if (candidate / "cli_client.py").exists():
+        sys.path.insert(0, str(candidate))
+        break
 
 from cli_client import main
 
