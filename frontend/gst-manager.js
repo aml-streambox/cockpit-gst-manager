@@ -326,61 +326,31 @@ function updateDetailView() {
     // For auto instances, show config summary; for custom/UVC, show pipeline
     if (inst.instance_type === 'auto' && inst.auto_config) {
         const cfg = inst.auto_config;
-        document.getElementById("detail-pipeline").innerHTML = `
-            <div class="gst-auto-config-summary">
-                <div class="gst-config-row">
-                    <span class="gst-label">Type:</span>
-                    <span>Auto-Generated</span>
-                </div>
-                <div class="gst-config-row">
-                    <span class="gst-label">Encoder:</span>
-                    <span>H.265 (amlvenc)</span>
-                </div>
-                <div class="gst-config-row">
-                    <span class="gst-label">Bitrate:</span>
-                    <span>${(cfg.bitrate_kbps / 1000).toFixed(1)} Mbps</span>
-                </div>
-                <div class="gst-config-row">
-                    <span class="gst-label">GOP Interval:</span>
-                    <span>${cfg.gop_interval_seconds}s</span>
-                </div>
-                <div class="gst-config-row">
-                    <span class="gst-label">RC Mode:</span>
-                    <span>${cfg.rc_mode === 1 ? 'CBR' : cfg.rc_mode === 0 ? 'VBR' : 'FixQP'}</span>
-                </div>
-                <div class="gst-config-row">
-                    <span class="gst-label">Audio:</span>
-                    <span>${cfg.audio_source === 'hdmi_rx' ? 'HDMI RX' : 'Line In'}</span>
-                </div>
-                <div class="gst-config-row">
-                    <span class="gst-label">SRT Port:</span>
-                    <span>${cfg.srt_port}</span>
-                </div>
-                ${cfg.recording_enabled ? `
-                <div class="gst-config-row">
-                    <span class="gst-label">Recording:</span>
-                    <span>${cfg.recording_path}</span>
-                </div>
-                ` : ''}
-                <hr style="margin: 10px 0; border: none; border-top: 1px solid #ddd;">
-                <pre style="font-size: 11px; white-space: pre-wrap; word-break: break-all;">gst-launch-1.0 -e ${escapeHtml(inst.pipeline)}</pre>
-            </div>
-        `;
+        const rows = [
+            ['Type', 'Auto-Generated'],
+            ['Encoder', 'H.265 (amlvenc)'],
+            ['Bitrate', `${(cfg.bitrate_kbps / 1000).toFixed(1)} Mbps`],
+            ['GOP Interval', `${cfg.gop_interval_seconds}s`],
+            ['RC Mode', cfg.rc_mode === 1 ? 'CBR' : cfg.rc_mode === 0 ? 'VBR' : 'FixQP'],
+            ['Audio', cfg.audio_source === 'hdmi_rx' ? 'HDMI RX' : 'Line In'],
+            ['SRT Port', `${cfg.srt_port}`]
+        ];
+        if (cfg.recording_enabled) {
+            rows.push(['Recording', cfg.recording_path]);
+        }
+        document.getElementById("detail-pipeline").innerHTML = renderInstanceSummary(rows, inst.pipeline);
     } else if (inst.instance_type === 'uvc' && inst.uvc_config) {
         const cfg = inst.uvc_config;
-        document.getElementById("detail-pipeline").innerHTML = `
-            <div class="gst-auto-config-summary">
-                <div class="gst-config-row"><span class="gst-label">Type:</span><span>UVC Device</span></div>
-                <div class="gst-config-row"><span class="gst-label">Device:</span><span>${escapeHtml(cfg.device_path || '-')}</span></div>
-                <div class="gst-config-row"><span class="gst-label">Format:</span><span>${escapeHtml(cfg.format_type || 'auto')}</span></div>
-                <div class="gst-config-row"><span class="gst-label">Resolution:</span><span>${cfg.width || '-'}x${cfg.height || '-'}</span></div>
-                <div class="gst-config-row"><span class="gst-label">FPS:</span><span>${cfg.fps || '-'}</span></div>
-                <div class="gst-config-row"><span class="gst-label">Encoder:</span><span>${escapeHtml(cfg.encoder || '-')}</span></div>
-                <div class="gst-config-row"><span class="gst-label">Output:</span><span>${escapeHtml(cfg.output_type || '-')}</span></div>
-                <hr style="margin: 10px 0; border: none; border-top: 1px solid #ddd;">
-                <pre style="font-size: 11px; white-space: pre-wrap; word-break: break-all;">gst-launch-1.0 -e ${escapeHtml(inst.pipeline)}</pre>
-            </div>
-        `;
+        const rows = [
+            ['Type', 'UVC Device'],
+            ['Device', cfg.device_path || '-'],
+            ['Format', cfg.format_type || 'auto'],
+            ['Resolution', `${cfg.width || '-'}x${cfg.height || '-'}`],
+            ['FPS', `${cfg.fps || '-'}`],
+            ['Encoder', cfg.encoder || '-'],
+            ['Output', cfg.output_type || '-']
+        ];
+        document.getElementById("detail-pipeline").innerHTML = renderInstanceSummary(rows, inst.pipeline);
     } else {
         document.getElementById("detail-pipeline").textContent = 'gst-launch-1.0 -e ' + inst.pipeline;
     }
@@ -731,6 +701,13 @@ function formatUptime(seconds) {
     const hours = Math.floor(seconds / 3600);
     const mins = Math.floor((seconds % 3600) / 60);
     return `${hours}h ${mins}m`;
+}
+
+function renderInstanceSummary(rows, pipeline) {
+    const rowsHtml = rows
+        .map(([label, value]) => `<div class="gst-config-row"><span class="gst-label">${escapeHtml(label)}:</span><span>${escapeHtml(String(value))}</span></div>`)
+        .join("");
+    return `<div class="gst-auto-config-summary">${rowsHtml}<hr style="margin: 10px 0; border: none; border-top: 1px solid #ddd;"><pre style="font-size: 11px; white-space: pre-wrap; word-break: break-all;">gst-launch-1.0 -e ${escapeHtml(pipeline)}</pre></div>`;
 }
 
 function getInstanceCategory(instance) {
