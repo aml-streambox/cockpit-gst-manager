@@ -45,6 +45,7 @@ class DiscoveryManager:
             "custom_plugins": await self._discover_custom_plugins(),
             "capture_sources": await self._discover_capture_sources(),
             "storage": await self._discover_storage(),
+            "uvc_devices": await self._discover_uvc_devices(),
         }
 
         # Save to cache
@@ -53,7 +54,8 @@ class DiscoveryManager:
         logger.info(
             f"Discovery complete: {len(self.context['video_inputs'])} video, "
             f"{len(self.context['encoders'])} encoders, "
-            f"{len(self.context['storage'])} storage"
+            f"{len(self.context['storage'])} storage, "
+            f"{len(self.context['uvc_devices'])} uvc"
         )
 
         return self.context
@@ -305,6 +307,22 @@ class DiscoveryManager:
         })
         
         return sources
+
+    async def _discover_uvc_devices(self) -> List[Dict[str, Any]]:
+        """Discover UVC (USB Video Class) devices.
+
+        Returns:
+            List of UVC device dictionaries.
+        """
+        try:
+            # Import UVC utils
+            from uvc_utils import UVCDiscovery
+            discovery = UVCDiscovery()
+            devices = await discovery.discover()
+            return [d.to_dict() for d in devices]
+        except Exception as e:
+            logger.warning(f"UVC discovery failed: {e}")
+            return []
 
     async def _discover_storage(self) -> List[Dict[str, Any]]:
         """Discover available storage locations."""

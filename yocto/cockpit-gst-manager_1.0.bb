@@ -35,10 +35,16 @@ do_install() {
     # Backend Python files
     install -d ${D}${libdir}/gst-manager
     cp -r ${WORKDIR}/gst-manager/backend/* ${D}${libdir}/gst-manager/
+    install -d ${D}${bindir}
+    install -m 0755 ${WORKDIR}/gst-manager/cli/gst-manager-cli ${D}${bindir}/gst-manager-cli
     
     # Frontend Cockpit plugin
     install -d ${D}${datadir}/cockpit/gst-manager
     cp -r ${WORKDIR}/gst-manager/frontend/* ${D}${datadir}/cockpit/gst-manager/
+
+    # AI/CLI skill docs
+    install -d ${D}${datadir}/doc/gst-manager/skills
+    cp -r ${WORKDIR}/gst-manager/doc/skills/* ${D}${datadir}/doc/gst-manager/skills/
     
     # systemd service
     install -d ${D}${systemd_system_unitdir}
@@ -53,8 +59,10 @@ do_install() {
 }
 
 FILES:${PN} = " \
+    ${bindir}/gst-manager-cli \
     ${libdir}/gst-manager \
     ${datadir}/cockpit/gst-manager \
+    ${datadir}/doc/gst-manager/skills \
     ${localstatedir}/lib/gst-manager \
 "
 

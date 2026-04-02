@@ -28,11 +28,14 @@ systemctl stop gst-manager 2>/dev/null || true
 echo "[2/6] Creating directories..."
 mkdir -p /usr/share/cockpit/gst-manager
 mkdir -p /usr/lib/gst-manager/ai
+mkdir -p /usr/share/doc/gst-manager/skills
 mkdir -p /var/lib/gst-manager/instances
 
 echo "[3/6] Installing backend..."
 cp -f ${SCRIPT_DIR}/backend/*.py /usr/lib/gst-manager/
 cp -f ${SCRIPT_DIR}/backend/ai/*.py /usr/lib/gst-manager/ai/
+install -m 0755 ${SCRIPT_DIR}/cli/gst-manager-cli /usr/bin/gst-manager-cli
+cp -f ${SCRIPT_DIR}/doc/skills/*.md /usr/share/doc/gst-manager/skills/
 
 echo "[4/6] Installing frontend..."
 cp -f ${SCRIPT_DIR}/frontend/* /usr/share/cockpit/gst-manager/

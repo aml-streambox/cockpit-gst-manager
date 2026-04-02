@@ -29,6 +29,7 @@ class InstanceType(Enum):
     """Type of pipeline instance."""
     CUSTOM = "custom"  # User-created, fully editable
     AUTO = "auto"      # Auto-generated from config, read-only
+    UVC = "uvc"        # UVC camera pipeline
 
 
 @dataclass
@@ -48,6 +49,7 @@ class Instance:
     pipeline: str
     instance_type: InstanceType = InstanceType.CUSTOM
     auto_config: Optional[Dict[str, Any]] = None
+    uvc_config: Optional[Dict[str, Any]] = None
     status: InstanceStatus = InstanceStatus.STOPPED
     pid: Optional[int] = None
     autostart: bool = False

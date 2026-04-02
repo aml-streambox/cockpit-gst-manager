@@ -12,9 +12,9 @@ const PipelineEditor = {
         // Sinks
         "srtsink", "rtmpsink", "filesink", "splitmuxsink", "fakesink",
         // Encoders
-        "aml_h264enc", "aml_h265enc", "x264enc", "x265enc",
+        "amlvenc", "aml_h264enc", "aml_h265enc", "x264enc", "x265enc",
         // Decoders
-        "amlvdec", "avdec_h264", "avdec_h265",
+        "amlvdec", "amlv4l2h264dec", "avdec_h264", "avdec_h265",
         // Parsers
         "h264parse", "h265parse", "aacparse", "mpegaudioparse",
         // Muxers

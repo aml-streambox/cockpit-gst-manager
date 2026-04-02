@@ -69,6 +69,9 @@
                         <button class="gst-tab-btn" data-tab="custom">
                             Custom Instances
                         </button>
+                        <button class="gst-tab-btn" data-tab="uvc">
+                            UVC Devices
+                        </button>
                     </div>
                     
                     <!-- Auto Configurator Tab -->
@@ -217,6 +220,11 @@
                         <div id="instances-list" class="gst-instances-list">
                             <p class="gst-empty-state">No instances configured</p>
                         </div>
+                    </div>
+                    
+                    <!-- UVC Devices Tab -->
+                    <div id="tab-uvc" class="gst-tab-content" style="display: none;">
+                        <div id="uvc-content"></div>
                     </div>
                 </section>
 
@@ -367,6 +375,7 @@
     <script src="pipeline-editor.js"></script>
     <script src="ai-chat.js"></script>
     <script src="auto-configurator.js"></script>
+    <script src="uvc-manager.js"></script>
 </body>
 
 </html>

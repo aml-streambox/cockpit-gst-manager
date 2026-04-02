@@ -94,6 +94,11 @@ function switchTab(tab) {
         content.classList.toggle('active', content.id === `tab-${tab}`);
         content.style.display = content.id === `tab-${tab}` ? 'block' : 'none';
     });
+    
+    // Initialize UVC manager when UVC tab is selected
+    if (tab === 'uvc' && typeof UVCManager !== 'undefined') {
+        UVCManager.init();
+    }
 }
 
 function subscribeToSignals() {
@@ -232,6 +237,9 @@ function renderInstancesList() {
                     <span class="gst-instance-name">${escapeHtml(instance.name)}</span>
                     <span class="gst-status-badge gst-status-${instance.status}">${instance.status}</span>
                 </div>
+                <div class="gst-instance-badges">
+                    ${instance.instance_type === 'uvc' ? '<span class="gst-badge">uvc</span>' : ''}
+                </div>
                 <div class="gst-instance-pipeline">${escapeHtml(truncate(instance.pipeline, 80))}</div>
             </div>
         `).join("");
@@ -299,6 +307,25 @@ function renderBoardContext() {
         html += '</ul>';
     }
 
+    // UVC devices
+    html += '<h3 class="gst-hw-title">UVC Devices</h3>';
+    if (ctx.uvc_devices && ctx.uvc_devices.length > 0) {
+        html += '<ul class="gst-hw-list">';
+        ctx.uvc_devices.forEach(v => {
+            const formats = [];
+            if (v.is_h264_passthrough) formats.push('H.264');
+            if (v.is_mjpeg) formats.push('MJPEG');
+            if (v.is_yuyv) formats.push('YUYV');
+            html += `<li class="gst-hw-item gst-hw-available">
+                <span class="gst-hw-device">${escapeHtml(v.device_path)}</span>
+                <span class="gst-hw-type">${escapeHtml(v.name)}${formats.length ? ` (${formats.join(', ')})` : ''}</span>
+            </li>`;
+        });
+        html += '</ul>';
+    } else {
+        html += '<p class="gst-hw-empty">No UVC devices</p>';
+    }
+
     html += '</div>';
     container.innerHTML = html;
 }
@@ -313,7 +340,7 @@ function updateDetailView() {
     document.getElementById("detail-pid").textContent = inst.pid || "-";
     document.getElementById("detail-error").textContent = inst.error_message || "-";
     
-    // For auto instances, show config summary; for custom, show pipeline
+    // For auto instances, show config summary; for custom/UVC, show pipeline
     if (inst.instance_type === 'auto' && inst.auto_config) {
         const cfg = inst.auto_config;
         document.getElementById("detail-pipeline").innerHTML = `
@@ -352,6 +379,21 @@ function updateDetailView() {
                     <span>${cfg.recording_path}</span>
                 </div>
                 ` : ''}
+                <hr style="margin: 10px 0; border: none; border-top: 1px solid #ddd;">
+                <pre style="font-size: 11px; white-space: pre-wrap; word-break: break-all;">gst-launch-1.0 -e ${escapeHtml(inst.pipeline)}</pre>
+            </div>
+        `;
+    } else if (inst.instance_type === 'uvc' && inst.uvc_config) {
+        const cfg = inst.uvc_config;
+        document.getElementById("detail-pipeline").innerHTML = `
+            <div class="gst-auto-config-summary">
+                <div class="gst-config-row"><span class="gst-label">Type:</span><span>UVC Device</span></div>
+                <div class="gst-config-row"><span class="gst-label">Device:</span><span>${escapeHtml(cfg.device_path || '-')}</span></div>
+                <div class="gst-config-row"><span class="gst-label">Format:</span><span>${escapeHtml(cfg.format_type || 'auto')}</span></div>
+                <div class="gst-config-row"><span class="gst-label">Resolution:</span><span>${cfg.width || '-'}x${cfg.height || '-'}</span></div>
+                <div class="gst-config-row"><span class="gst-label">FPS:</span><span>${cfg.fps || '-'}</span></div>
+                <div class="gst-config-row"><span class="gst-label">Encoder:</span><span>${escapeHtml(cfg.encoder || '-')}</span></div>
+                <div class="gst-config-row"><span class="gst-label">Output:</span><span>${escapeHtml(cfg.output_type || '-')}</span></div>
                 <hr style="margin: 10px 0; border: none; border-top: 1px solid #ddd;">
                 <pre style="font-size: 11px; white-space: pre-wrap; word-break: break-all;">gst-launch-1.0 -e ${escapeHtml(inst.pipeline)}</pre>
             </div>

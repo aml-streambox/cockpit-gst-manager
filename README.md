@@ -21,6 +21,7 @@ A Cockpit plugin for managing GStreamer streaming/encoding pipelines on Amlogic 
 - **Video Compositor** - OSD/overlay via ge2d hardware acceleration
 - **Import/Export** - Share pipeline configurations
 - **Localization** - English and Chinese UI
+- **AI-Friendly CLI** - Full D-Bus control via `gst-manager-cli`
 
 ## Documentation
 
@@ -37,12 +38,26 @@ See [doc/implementation_plan/](doc/implementation_plan/) for:
 ```bash
 # On target device
 systemctl start gst-manager
+gst-manager-cli instances list
 # Access via Cockpit at https://<device-ip>:9090
 ```
 
 ## Sample Configurations
 
 See [samples/](samples/) for working pipeline examples.
+
+## CLI
+
+The plugin ships with `gst-manager-cli` for local or automated control.
+
+- Skill guide: [doc/skills/gst-manager-cli.md](doc/skills/gst-manager-cli.md)
+- Common usage:
+
+```bash
+gst-manager-cli board-context
+gst-manager-cli uvc list
+gst-manager-cli instances list
+```
 
 ## Requirements
 
@@ -53,4 +68,3 @@ See [samples/](samples/) for working pipeline examples.
 ## License
 
 MIT
-

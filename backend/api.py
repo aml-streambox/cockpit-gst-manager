@@ -193,6 +193,192 @@ if DBUS_LIBRARY == "dbus_next":
             """Get current hardware discovery information as JSON."""
             return self.discovery_manager.get_context_json()
 
+        # --- UVC Device Methods ---
+
+        @method()
+        async def GetUVCDevices(self) -> "s":
+            """Get list of discovered UVC devices.
+            
+            Returns:
+                JSON array of UVC device information.
+            """
+            try:
+                from uvc_utils import UVCDiscovery
+                discovery = UVCDiscovery()
+                devices = await discovery.discover()
+                return json.dumps([d.to_dict() for d in devices], indent=2)
+            except Exception as e:
+                logger.error(f"GetUVCDevices failed: {e}")
+                return json.dumps({"error": str(e)})
+
+        @method()
+        async def RefreshUVCDevices(self) -> "s":
+            """Refresh UVC device discovery.
+            
+            Returns:
+                JSON array of UVC device information.
+            """
+            try:
+                from uvc_utils import UVCDiscovery
+                discovery = UVCDiscovery()
+                devices = await discovery.discover()
+                return json.dumps([d.to_dict() for d in devices], indent=2)
+            except Exception as e:
+                logger.error(f"RefreshUVCDevices failed: {e}")
+                return json.dumps({"error": str(e)})
+
+        @method()
+        async def CreateUVCInstance(
+            self,
+            name: "s",
+            device_path: "s",
+            format_type: "s",
+            width: "i",
+            height: "i",
+            fps: "i",
+            encoder: "s",
+            bitrate: "i",
+            output_type: "s",
+            output_config_json: "s"
+        ) -> "s":
+            """Create a new UVC device pipeline instance.
+            
+            Args:
+                name: Instance name
+                device_path: UVC device path (e.g., "/dev/video0")
+                format_type: Input format ("mjpeg", "yuyv", "h264", "auto")
+                width: Video width
+                height: Video height
+                fps: Framerate
+                encoder: Encoder type ("h264", "h265", "none")
+                bitrate: Video bitrate in bps
+                output_type: Output type ("srt", "rtmp", "file", "display")
+                output_config_json: JSON with output-specific configuration
+                
+            Returns:
+                Instance ID or error message
+            """
+            try:
+                from uvc_utils import UVCDiscovery, UVCPipelineBuilder, UVCDevice, VideoFormat, FrameSize
+                
+                # Discover devices to get device info
+                discovery = UVCDiscovery()
+                devices = await discovery.discover()
+                
+                # Find the requested device
+                device = None
+                for d in devices:
+                    if d.device_path == device_path:
+                        device = d
+                        break
+                
+                if not device:
+                    return json.dumps({"error": f"Device {device_path} not found"})
+                
+                # Parse output config
+                output_config = {}
+                if output_config_json:
+                    output_config = json.loads(output_config_json)
+                
+                # Build pipeline
+                builder = UVCPipelineBuilder(device)
+                pipeline = builder.build_pipeline(
+                    format_type=format_type,
+                    width=width,
+                    height=height,
+                    fps=fps,
+                    encoder=encoder,
+                    bitrate=bitrate,
+                    output_type=output_type,
+                    output_config=output_config
+                )
+                
+                # Create instance
+                instance_id = await self.instance_manager.create_instance(name, pipeline)
+                
+                # Save UVC-specific configuration
+                instance = self.instance_manager.get_instance(instance_id)
+                if instance:
+                    from instances import InstanceType
+                    instance.instance_type = InstanceType.UVC
+                    instance.uvc_config = {
+                        "device_path": device_path,
+                        "format_type": format_type,
+                        "width": width,
+                        "height": height,
+                        "fps": fps,
+                        "encoder": encoder,
+                        "bitrate": bitrate,
+                        "output_type": output_type,
+                        "output_config": output_config
+                    }
+                    await self.history_manager.save_instance(instance.to_dict())
+                
+                return json.dumps({"instance_id": instance_id, "pipeline": pipeline})
+                
+            except Exception as e:
+                logger.error(f"CreateUVCInstance failed: {e}")
+                return json.dumps({"error": str(e)})
+
+        @method()
+        async def GetUVCDevicePipeline(
+            self,
+            device_path: "s",
+            format_type: "s",
+            width: "i",
+            height: "i",
+            fps: "i",
+            encoder: "s",
+            bitrate: "i",
+            output_type: "s",
+            output_config_json: "s"
+        ) -> "s":
+            """Get pipeline preview for a UVC device.
+            
+            Returns:
+                Pipeline string
+            """
+            try:
+                from uvc_utils import UVCDiscovery, UVCPipelineBuilder
+                
+                # Discover devices to get device info
+                discovery = UVCDiscovery()
+                devices = await discovery.discover()
+                
+                # Find the requested device
+                device = None
+                for d in devices:
+                    if d.device_path == device_path:
+                        device = d
+                        break
+                
+                if not device:
+                    return json.dumps({"error": f"Device {device_path} not found"})
+                
+                # Parse output config
+                output_config = {}
+                if output_config_json:
+                    output_config = json.loads(output_config_json)
+                
+                # Build pipeline
+                builder = UVCPipelineBuilder(device)
+                pipeline = builder.build_pipeline(
+                    format_type=format_type,
+                    width=width,
+                    height=height,
+                    fps=fps,
+                    encoder=encoder,
+                    bitrate=bitrate,
+                    output_type=output_type,
+                    output_config=output_config
+                )
+                
+                return pipeline
+                
+            except Exception as e:
+                logger.error(f"GetUVCDevicePipeline failed: {e}")
+                return f"Error: {e}"
+
         # --- HDMI & Event Methods ---
 
         @method()
