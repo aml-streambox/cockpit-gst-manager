@@ -17,12 +17,17 @@ logger = logging.getLogger("gst-manager.events")
 
 # Try to import tvservice module for native integration
 try:
-    from . import tvservice
+    from . import tvservice  # type: ignore
     TVSERVICE_AVAILABLE = True
-    logger.info("TvService module available")
+    logger.info("TvService module available (package import)")
 except ImportError:
-    TVSERVICE_AVAILABLE = False
-    logger.debug("TvService module not available, using fallback")
+    try:
+        import tvservice  # type: ignore
+        TVSERVICE_AVAILABLE = True
+        logger.info("TvService module available (absolute import)")
+    except ImportError:
+        TVSERVICE_AVAILABLE = False
+        logger.debug("TvService module not available, using fallback")
 
 
 # Sysfs paths for HDMI RX
@@ -323,6 +328,17 @@ class HdmiMonitor:
                 if status.width > 0 and status.height > 0:
                     status.signal_locked = True
 
+                # Amlogic hdmirx info can remain stale after unplug.
+                # Treat TMDS clock 0 as no active RX signal unless an explicit
+                # cable/signal node says otherwise.
+                tmds_match = re.search(r"TMDS\s+clock:\s*(\d+)", info, re.IGNORECASE)
+                if tmds_match:
+                    tmds_clock = int(tmds_match.group(1))
+                    if tmds_clock == 0:
+                        status.signal_locked = False
+                        if not cable_path.exists():
+                            status.cable_connected = False
+
         return status
 
     def _get_status_v4l2(self) -> HdmiStatus:
@@ -567,6 +583,7 @@ class EventManager:
         self._rx_stable_time: Optional[float] = None
         self._tx_status: Optional[Any] = None
         self._tx_check_task: Optional[asyncio.Task] = None
+        self._periodic_poll_task: Optional[asyncio.Task] = None
         self._last_passthrough_state: Optional[Dict[str, Any]] = None
 
     async def start(self) -> None:
@@ -658,12 +675,14 @@ class EventManager:
                 if rx_status.signal_locked and rx_status.width > 0 and rx_status.height > 0:
                     logger.info("HDMI RX is stable, checking TX status")
                     self._rx_stable_time = time.time()
+                    if self.auto_instance_manager:
+                        await self.auto_instance_manager.on_hdmi_signal_ready(rx_status)
                     await self._check_tx_status()
                     return
             
             # If we get here, RX never became stable in 10 seconds
             logger.info("HDMI RX did not stabilize in 10 seconds, starting periodic polling")
-            asyncio.create_task(self._periodic_polling())
+            self._periodic_poll_task = asyncio.create_task(self._periodic_polling())
             
         except Exception as e:
             logger.warning(f"Failed to check initial HDMI state: {e}", exc_info=True)
@@ -680,6 +699,8 @@ class EventManager:
                         logger.info(f"HDMI RX became stable: {rx_status.resolution}")
                         self._rx_stable_time = time.time()
                         self.last_hdmi_status = rx_status
+                        if self.auto_instance_manager:
+                            await self.auto_instance_manager.on_hdmi_signal_ready(rx_status)
                         # Wait 1.5s then check TX
                         await asyncio.sleep(1.5)
                         await self._check_tx_status()
@@ -697,6 +718,12 @@ class EventManager:
             self._tx_check_task.cancel()
             try:
                 await self._tx_check_task
+            except asyncio.CancelledError:
+                pass
+        if self._periodic_poll_task:
+            self._periodic_poll_task.cancel()
+            try:
+                await self._periodic_poll_task
             except asyncio.CancelledError:
                 pass
 
@@ -759,6 +786,18 @@ class EventManager:
             except Exception as e:
                 logger.error(f"Failed to emit HDMI signal: {e}")
 
+        if (
+            status.signal_locked
+            and status.cable_connected
+            and status.width > 0
+            and status.height > 0
+            and self.auto_instance_manager
+        ):
+            try:
+                await self.auto_instance_manager.on_hdmi_signal_ready(status)
+            except Exception as e:
+                logger.error(f"Auto instance manager status-change error: {e}")
+
     async def _on_hdmi_signal_ready(self, status: HdmiStatus) -> None:
         """Handle HDMI RX signal becoming stable.
         
@@ -769,6 +808,12 @@ class EventManager:
         # Mark RX as stable
         self._rx_stable_time = time.time()
         logger.info(f"RX marked as stable, scheduling TX check in 1.5s")
+
+        if self.auto_instance_manager:
+            try:
+                await self.auto_instance_manager.on_hdmi_signal_ready(status)
+            except Exception as e:
+                logger.error(f"Auto instance manager RX-ready error: {e}")
         
         # Cancel any pending TX check
         if self._tx_check_task and not self._tx_check_task.done():
@@ -870,6 +915,12 @@ class EventManager:
         # Mark RX as not stable
         self._rx_stable_time = None
         self._tx_status = None
+
+        if self.auto_instance_manager:
+            try:
+                await self.auto_instance_manager.on_hdmi_signal_lost()
+            except Exception as e:
+                logger.error(f"Auto instance manager RX-lost error: {e}")
         
         # Cancel any pending TX check
         if self._tx_check_task and not self._tx_check_task.done():

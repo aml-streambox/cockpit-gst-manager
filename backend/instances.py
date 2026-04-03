@@ -5,6 +5,7 @@ Handles creation, lifecycle, and monitoring of GStreamer pipeline instances.
 
 import asyncio
 import logging
+import re
 import uuid
 import time
 from dataclasses import dataclass, field, asdict
@@ -87,6 +88,61 @@ class Instance:
         return cls(**filtered_data)
 
 
+@dataclass
+class SignalChangeInfo:
+    """Signal-change metadata extracted from gst-launch stderr."""
+
+    reason: str
+    width: int = 0
+    height: int = 0
+    frame_rate_raw: int = 0
+    color_space: str = ""
+    color_depth: int = 8
+    hdr_eotf: str = ""
+    dolby_vision: int = 0
+    interlace: int = 0
+
+    @property
+    def fps(self) -> int:
+        """Get normalized frames per second from raw message value."""
+        if self.frame_rate_raw <= 0:
+            return 0
+        if self.frame_rate_raw > 300:
+            return round(self.frame_rate_raw / 100)
+        return self.frame_rate_raw
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert signal-change info to a dictionary."""
+        return {
+            "reason": self.reason,
+            "width": self.width,
+            "height": self.height,
+            "frame_rate_raw": self.frame_rate_raw,
+            "fps": self.fps,
+            "color_space": self.color_space,
+            "color_depth": self.color_depth,
+            "hdr_eotf": self.hdr_eotf,
+            "dolby_vision": self.dolby_vision,
+            "interlace": self.interlace,
+        }
+
+
+@dataclass
+class ProcessExitInfo:
+    """Structured information about a completed gst-launch process."""
+
+    instance_id: str
+    exit_code: int
+    intentional: bool
+    clean_exit: bool
+    is_auto_instance: bool
+    is_streamboxsrc: bool
+    signal_change: Optional[SignalChangeInfo] = None
+    stderr_text: str = ""
+    stdout_text: str = ""
+    error_message: Optional[str] = None
+
+
 # Error patterns for transient vs fatal classification
 TRANSIENT_ERRORS = [
     "connection refused",
@@ -115,7 +171,11 @@ class InstanceManager:
         self.instances: Dict[str, Instance] = {}
         self.processes: Dict[str, asyncio.subprocess.Process] = {}
         self.status_callbacks: List[Callable] = []
+        self.exit_callbacks: List[Callable] = []
+        self.start_watchdogs: Dict[str, asyncio.Task] = {}
         self._stopping_instances: set = set()  # Track intentional stops
+        self.start_command_timeout = 10.0
+        self.starting_watchdog_timeout = 15.0
 
     async def load_instances(self) -> None:
         """Load saved instances from history."""
@@ -137,6 +197,10 @@ class InstanceManager:
         """Register callback for status changes."""
         self.status_callbacks.append(callback)
 
+    def add_exit_callback(self, callback: Callable) -> None:
+        """Register callback for process exit events."""
+        self.exit_callbacks.append(callback)
+
     async def _notify_status_change(self, instance_id: str, status: str) -> None:
         """Notify all callbacks of status change."""
         for callback in self.status_callbacks:
@@ -144,6 +208,37 @@ class InstanceManager:
                 await callback(instance_id, status)
             except Exception as e:
                 logger.error(f"Status callback error: {e}")
+
+    async def _notify_process_exit(self, exit_info: ProcessExitInfo) -> None:
+        """Notify registered callbacks of process exit details."""
+        for callback in self.exit_callbacks:
+            try:
+                result = callback(exit_info)
+                if asyncio.iscoroutine(result):
+                    await result
+            except Exception as e:
+                logger.error(f"Exit callback error: {e}")
+
+    async def set_instance_status(
+        self,
+        instance_id: str,
+        status: InstanceStatus,
+        error_message: Optional[str] = None,
+    ) -> bool:
+        """Update a runtime instance status and notify listeners."""
+        instance = self.instances.get(instance_id)
+        if not instance:
+            return False
+
+        instance.status = status
+        instance.error_message = error_message
+        if status != InstanceStatus.RUNNING:
+            instance.pid = None
+            instance.uptime_start = None
+        if status != InstanceStatus.STARTING:
+            self._cancel_start_watchdog(instance_id)
+        await self._notify_status_change(instance_id, status.value)
+        return True
 
     def list_instances(self) -> List[dict]:
         """Get all instances as dictionaries."""
@@ -225,6 +320,7 @@ class InstanceManager:
         instance.status = InstanceStatus.STARTING
         instance.error_message = None
         await self._notify_status_change(instance_id, "starting")
+        self._start_start_watchdog(instance_id)
 
         try:
             # Build gst-launch-1.0 command
@@ -234,10 +330,13 @@ class InstanceManager:
             logger.debug(f"Starting pipeline: {' '.join(cmd)}")
 
             # Start process
-            process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
+            process = await asyncio.wait_for(
+                asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE
+                ),
+                timeout=self.start_command_timeout,
             )
 
             self.processes[instance_id] = process
@@ -245,6 +344,7 @@ class InstanceManager:
             instance.status = InstanceStatus.RUNNING
             instance.uptime_start = time.time()
             instance.retry_count = 0
+            self._cancel_start_watchdog(instance_id)
 
             await self._notify_status_change(instance_id, "running")
             logger.info(f"Started instance: {instance_id} (PID: {process.pid})")
@@ -254,7 +354,21 @@ class InstanceManager:
 
             return True
 
+        except asyncio.TimeoutError:
+            self._cancel_start_watchdog(instance_id)
+            instance.status = InstanceStatus.ERROR
+            instance.error_message = (
+                f"Pipeline start timed out after {self.start_command_timeout:.1f}s"
+            )
+            await self._notify_status_change(instance_id, "error")
+            logger.error(
+                "Failed to start instance %s: start command timed out after %.1fs",
+                instance_id,
+                self.start_command_timeout,
+            )
+            return False
         except Exception as e:
+            self._cancel_start_watchdog(instance_id)
             instance.status = InstanceStatus.ERROR
             instance.error_message = str(e)
             await self._notify_status_change(instance_id, "error")
@@ -292,31 +406,34 @@ class InstanceManager:
                 return  # Instance was deleted
 
             instance = self.instances[instance_id]
+            stdout_text = stdout.decode(errors="replace") if stdout else ""
+            stderr_text = stderr.decode(errors="replace") if stderr else ""
+            signal_change = self._parse_signal_change(stderr_text)
+            is_streamboxsrc = (
+                instance.instance_type == InstanceType.AUTO
+                and instance.auto_config
+                and instance.auto_config.get("capture_source") in ("vfmcap", "vdin1")
+            )
+            intentional = instance_id in self._stopping_instances
 
             # Store stderr output in error logs
             if stderr:
-                stderr_lines = stderr.decode(errors="replace").strip().split("\n")
+                stderr_lines = stderr_text.strip().split("\n")
                 # Keep last 100 lines
                 instance.error_logs.extend(stderr_lines)
                 instance.error_logs = instance.error_logs[-100:]
 
             if exit_code == 0:
-                # Clean exit (EOS).  For auto instances using streamboxsrc,
-                # exit-code-0 means "HDMI signal changed" — the plugin posts
-                # an hdmi-signal-change message and returns EOS.  We mark the
-                # instance as stopped and notify, then let the event manager
-                # re-trigger on_passthrough_ready() when the new signal
-                # stabilises.  The auto_config.capture_source field tells us
-                # whether this instance used streamboxsrc.
-                is_streamboxsrc = (
-                    instance.instance_type == InstanceType.AUTO
-                    and instance.auto_config
-                    and instance.auto_config.get("capture_source") in ("vfmcap", "vdin1")
-                )
                 if is_streamboxsrc:
+                    detail = ""
+                    if signal_change:
+                        detail = (
+                            f" reason={signal_change.reason} "
+                            f"new={signal_change.width}x{signal_change.height}@{signal_change.fps}"
+                        )
                     logger.info(
                         f"Instance {instance_id} (streamboxsrc) exited cleanly — "
-                        f"HDMI signal change, awaiting re-stabilisation"
+                        f"HDMI signal change detected.{detail}"
                     )
                 else:
                     logger.info(f"Instance {instance_id} completed normally")
@@ -324,16 +441,30 @@ class InstanceManager:
                 instance.error_message = None
                 instance.retry_count = 0
                 await self._notify_status_change(instance_id, "stopped")
-            elif instance_id in self._stopping_instances:
+            elif intentional:
                 # Intentional stop via stop_instance() - don't treat as error
                 logger.info(f"Instance {instance_id} stopped intentionally (exit code {exit_code})")
                 instance.status = InstanceStatus.STOPPED
                 self._stopping_instances.discard(instance_id)
                 await self._notify_status_change(instance_id, "stopped")
             else:
-                error_msg = stderr.decode(errors="replace") if stderr else f"Exit code: {exit_code}"
+                error_msg = stderr_text if stderr else f"Exit code: {exit_code}"
                 logger.error(f"Instance {instance_id} failed: {error_msg[:200]}")
                 await self._handle_error(instance_id, error_msg[:500])
+
+            exit_info = ProcessExitInfo(
+                instance_id=instance_id,
+                exit_code=exit_code,
+                intentional=intentional,
+                clean_exit=exit_code == 0,
+                is_auto_instance=instance.instance_type == InstanceType.AUTO,
+                is_streamboxsrc=is_streamboxsrc,
+                signal_change=signal_change,
+                stderr_text=stderr_text,
+                stdout_text=stdout_text,
+                error_message=None if exit_code == 0 else stderr_text[:500] or f"Exit code: {exit_code}",
+            )
+            await self._notify_process_exit(exit_info)
 
         except asyncio.CancelledError:
             logger.debug(f"Monitor cancelled for {instance_id}")
@@ -341,8 +472,45 @@ class InstanceManager:
             logger.error(f"Monitor error for {instance_id}: {e}")
 
         finally:
+            self._cancel_start_watchdog(instance_id)
             if instance_id in self.processes:
                 del self.processes[instance_id]
+
+    def _start_start_watchdog(self, instance_id: str) -> None:
+        """Start watchdog for instances stuck in STARTING state."""
+        self._cancel_start_watchdog(instance_id)
+        self.start_watchdogs[instance_id] = asyncio.create_task(
+            self._watch_start_timeout(instance_id)
+        )
+
+    def _cancel_start_watchdog(self, instance_id: str) -> None:
+        """Cancel any pending startup watchdog for an instance."""
+        task = self.start_watchdogs.pop(instance_id, None)
+        if task and not task.done():
+            task.cancel()
+
+    async def _watch_start_timeout(self, instance_id: str) -> None:
+        """Abort instances that remain in STARTING too long."""
+        try:
+            await asyncio.sleep(self.starting_watchdog_timeout)
+            instance = self.instances.get(instance_id)
+            if not instance or instance.status != InstanceStatus.STARTING:
+                return
+
+            logger.error(
+                "Instance %s stuck in starting for %.1fs, aborting startup",
+                instance_id,
+                self.starting_watchdog_timeout,
+            )
+            await self.set_instance_status(
+                instance_id,
+                InstanceStatus.ERROR,
+                error_message=(
+                    f"Startup watchdog timeout after {self.starting_watchdog_timeout:.1f}s"
+                ),
+            )
+        except asyncio.CancelledError:
+            return
 
     async def _handle_error(self, instance_id: str, error: str) -> None:
         """Handle pipeline error with recovery logic."""
@@ -563,3 +731,48 @@ class InstanceManager:
         instance.error_logs = []
         logger.info(f"Cleared logs for instance: {instance_id}")
         return True
+
+    def _parse_signal_change(self, stderr_text: str) -> Optional[SignalChangeInfo]:
+        """Extract the last hdmi-signal-change structure from stderr text."""
+        if stderr_text and "frame acquire timeout" in stderr_text.lower():
+            return SignalChangeInfo(reason="signal-timeout")
+
+        if not stderr_text or "hdmi-signal-change" not in stderr_text:
+            return None
+
+        marker_index = stderr_text.rfind("hdmi-signal-change")
+        if marker_index < 0:
+            return None
+
+        snippet = stderr_text[marker_index: marker_index + 2048]
+
+        def _match(pattern: str, default: str = "") -> str:
+            match = re.search(pattern, snippet, re.IGNORECASE | re.DOTALL)
+            if not match:
+                return default
+            return match.group(1).strip().strip('"')
+
+        reason = _match(r"reason\s*=\s*\(string\)\s*([^,;\n]+)")
+        if not reason:
+            return None
+
+        width = int(_match(r"width\s*=\s*\(uint\)\s*(\d+)", "0"))
+        height = int(_match(r"height\s*=\s*\(uint\)\s*(\d+)", "0"))
+        frame_rate_raw = int(_match(r"frame-rate\s*=\s*\(uint\)\s*(\d+)", "0"))
+        color_space = _match(r"color-space\s*=\s*\(string\)\s*([^,;\n]+)")
+        color_depth = int(_match(r"color-depth\s*=\s*\(uint\)\s*(\d+)", "8"))
+        hdr_eotf = _match(r"hdr-eotf\s*=\s*\(string\)\s*([^,;\n]+)")
+        dolby_vision = int(_match(r"dolby-vision\s*=\s*\(uint\)\s*(\d+)", "0"))
+        interlace = int(_match(r"interlace\s*=\s*\(uint\)\s*(\d+)", "0"))
+
+        return SignalChangeInfo(
+            reason=reason,
+            width=width,
+            height=height,
+            frame_rate_raw=frame_rate_raw,
+            color_space=color_space,
+            color_depth=color_depth,
+            hdr_eotf=hdr_eotf,
+            dolby_vision=dolby_vision,
+            interlace=interlace,
+        )

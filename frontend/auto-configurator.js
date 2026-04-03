@@ -29,7 +29,12 @@ class AutoConfigurator {
             srt_port: 8888,
             recording_enabled: false,
             recording_path: '/mnt/sdcard/recordings/capture.ts',
-            autostart_on_ready: true
+            autostart_on_ready: true,
+            use_hdr: true,
+            signal_debounce_seconds: 2.0,
+            max_restart_retries: 5,
+            restart_backoff_base: 1.0,
+            restart_backoff_max: 30.0
         };
     }
 
@@ -57,7 +62,8 @@ class AutoConfigurator {
             'auto-capture-source', 'auto-gop-interval', 'auto-bitrate', 'auto-rc-mode',
             'auto-audio-source', 'auto-srt-port',
             'auto-recording-enabled', 'auto-recording-path', 'auto-autostart',
-            'auto-use-hdr'
+            'auto-use-hdr', 'auto-signal-debounce', 'auto-max-restart-retries',
+            'auto-restart-backoff-base', 'auto-restart-backoff-max'
         ];
         
         inputs.forEach(id => {
@@ -200,7 +206,8 @@ class AutoConfigurator {
             'stopped': 'gst-status-off',
             'off': 'gst-status-off',
             'starting': 'gst-status-running',
-            'stopping': 'gst-status-running'
+            'stopping': 'gst-status-running',
+            'waiting_signal': 'gst-status-waiting_signal'
         }[status] || 'gst-status-off';
         
         const statusText = {
@@ -209,7 +216,8 @@ class AutoConfigurator {
             'stopped': 'Stopped (ready to start)',
             'off': 'Not configured',
             'starting': 'Starting...',
-            'stopping': 'Stopping...'
+            'stopping': 'Stopping...',
+            'waiting_signal': errorMessage || 'Waiting for signal'
         }[status] || status;
         
         const badgeText = {
@@ -218,7 +226,8 @@ class AutoConfigurator {
             'stopped': 'OFF',
             'off': 'OFF',
             'starting': 'STARTING',
-            'stopping': 'STOPPING'
+            'stopping': 'STOPPING',
+            'waiting_signal': 'WAITING'
         }[status] || status.toUpperCase();
         
         statusEl.innerHTML = `
@@ -234,10 +243,10 @@ class AutoConfigurator {
                 const stopBtn = document.getElementById('btn-auto-stop');
                 
                 if (startBtn && stopBtn) {
-                    if (status === 'running' || status === 'starting') {
+                    if (status === 'running' || status === 'starting' || status === 'waiting_signal') {
                         startBtn.disabled = true;
                         startBtn.style.display = 'none';
-                        stopBtn.disabled = false;
+                        stopBtn.disabled = status === 'waiting_signal';
                         stopBtn.style.display = 'inline-block';
                     } else {
                         startBtn.disabled = false;
@@ -297,6 +306,10 @@ class AutoConfigurator {
         setValue('auto-audio-source', this.config.audio_source);
         setValue('auto-srt-port', this.config.srt_port);
         setValue('auto-recording-path', this.config.recording_path);
+        setValue('auto-signal-debounce', this.config.signal_debounce_seconds ?? 2.0);
+        setValue('auto-max-restart-retries', this.config.max_restart_retries ?? 5);
+        setValue('auto-restart-backoff-base', this.config.restart_backoff_base ?? 1.0);
+        setValue('auto-restart-backoff-max', this.config.restart_backoff_max ?? 30.0);
 
         const recEnable = document.getElementById('auto-recording-enabled');
         if (recEnable) {
@@ -325,14 +338,14 @@ class AutoConfigurator {
     updateCaptureSourceHint(source) {
         const hintEl = document.getElementById('auto-capture-source-hint');
         if (!hintEl) return;
-        
+
         const hints = {
             'vfmcap': 'Path A: Low-latency raw capture with Vulkan GPU conversion. ' +
-                       'Best for minimal processing overhead. Uses /dev/video_cap.',
+                       'Best for minimal processing overhead. Uses HDMI RX readiness only and does not require HDMI TX.',
             'vdin1': 'Path B: Captures via Amlogic VPP color processing pipeline. ' +
-                      'NV21 passthrough for SDR, Vulkan AMLY\u2192P010 for HDR. Uses /dev/video71.',
-            'v4l2_legacy': 'Legacy v4l2 capture from /dev/video71. Deprecated \u2014 ' +
-                            'use Path A or B instead for better signal handling and recovery.'
+                      'NV21 passthrough for SDR, Vulkan AMLY to P010 for HDR. Requires HDMI TX because it is a loopback / screen-recording path.',
+            'v4l2_legacy': 'Legacy v4l2 capture from /dev/video71. Deprecated - ' +
+                            'use Path A or B instead for better signal handling and recovery. Treated like an RX-driven capture path.'
         };
         
         hintEl.textContent = hints[source] || '';
@@ -359,7 +372,11 @@ class AutoConfigurator {
             recording_enabled: getChecked('auto-recording-enabled'),
             recording_path: getValue('auto-recording-path', '/mnt/sdcard/recordings/capture.ts'),
             autostart_on_ready: getChecked('auto-autostart'),
-            use_hdr: getChecked('auto-use-hdr')
+            use_hdr: getChecked('auto-use-hdr'),
+            signal_debounce_seconds: parseFloat(getValue('auto-signal-debounce', '2.0')),
+            max_restart_retries: parseInt(getValue('auto-max-restart-retries', '5')),
+            restart_backoff_base: parseFloat(getValue('auto-restart-backoff-base', '1.0')),
+            restart_backoff_max: parseFloat(getValue('auto-restart-backoff-max', '30.0'))
         };
     }
 
@@ -412,10 +429,16 @@ class AutoConfigurator {
         // Poll every 2 seconds
         this._passthroughPollInterval = setInterval(async () => {
             try {
-                const result = await callMethod('GetPassthroughState');
-                const state = JSON.parse(result);
-                this.passthroughState = state;
-                this.updateStatusUI(state);
+                const [passthroughResult, hdmiResult] = await Promise.all([
+                    callMethod('GetPassthroughState'),
+                    callMethod('GetHdmiStatus')
+                ]);
+                const runtimeState = {
+                    passthrough: JSON.parse(passthroughResult),
+                    hdmi: JSON.parse(hdmiResult)
+                };
+                this.passthroughState = runtimeState;
+                this.updateStatusUI(runtimeState);
             } catch (error) {
                 console.debug('Failed to get passthrough state:', error);
             }
@@ -426,16 +449,42 @@ class AutoConfigurator {
             state.dbus.subscribe(
                 { interface: DBUS_INTERFACE, member: 'PassthroughStateChanged' },
                 (path, iface, signal, args) => {
-                    const state = JSON.parse(args[1]);
-                    this.passthroughState = state;
-                    this.updateStatusUI(state);
+                    const runtimeState = {
+                        passthrough: JSON.parse(args[1]),
+                        hdmi: this.passthroughState?.hdmi || null
+                    };
+                    this.passthroughState = runtimeState;
+                    this.updateStatusUI(runtimeState);
+                }
+            );
+
+            state.dbus.subscribe(
+                { interface: DBUS_INTERFACE, member: 'HdmiSignalChanged' },
+                (path, iface, signal, args) => {
+                    const [available, resolution] = args;
+                    const runtimeState = {
+                        passthrough: this.passthroughState?.passthrough || null,
+                        hdmi: {
+                            ...(this.passthroughState?.hdmi || {}),
+                            signal_locked: available,
+                            resolution: resolution || ''
+                        }
+                    };
+                    this.passthroughState = runtimeState;
+                    this.updateStatusUI(runtimeState);
                 }
             );
         }
     }
 
-    updateStatusUI(state) {
-        if (!state) return;
+    updateStatusUI(runtimeState) {
+        if (!runtimeState) return;
+
+        const passthrough = runtimeState.passthrough || {};
+        const hdmi = runtimeState.hdmi || {};
+        const captureSourceEl = document.getElementById('auto-capture-source');
+        const captureSource = captureSourceEl ? captureSourceEl.value : (this.config.capture_source || 'vfmcap');
+        const isTxDependent = captureSource === 'vdin1';
 
         const setDot = (id, status) => {
             const dot = document.getElementById(id);
@@ -452,10 +501,10 @@ class AutoConfigurator {
         };
 
         // HDMI RX - check if stable (not just connected)
-        if (state.rx_stable) {
+        if (passthrough.rx_stable || hdmi.signal_locked) {
             setDot('auto-hdmi-rx-dot', 'connected');
             setText('auto-hdmi-rx-text', 'Connected (Stable)');
-        } else if (state.rx_connected) {
+        } else if (passthrough.rx_connected || hdmi.cable_connected) {
             setDot('auto-hdmi-rx-dot', 'unstable');
             setText('auto-hdmi-rx-text', 'Connected (Unstable)');
         } else {
@@ -464,20 +513,25 @@ class AutoConfigurator {
         }
 
         // HDMI TX - check if ready (ready=1 and has valid resolution)
-        if (state.tx_ready) {
+        if (passthrough.tx_ready) {
             setDot('auto-hdmi-tx-dot', 'connected');
             setText('auto-hdmi-tx-text', 'Ready');
-        } else if (state.tx_connected) {
+        } else if (passthrough.tx_connected) {
             setDot('auto-hdmi-tx-dot', 'unstable');
             setText('auto-hdmi-tx-text', 'Not Ready');
         } else {
             setDot('auto-hdmi-tx-dot', 'disconnected');
-            setText('auto-hdmi-tx-text', 'Disconnected');
+            setText('auto-hdmi-tx-text', isTxDependent ? 'Disconnected' : 'Optional');
         }
 
-        // Passthrough / Capture readiness
-        // Can capture when RX is stable AND TX is ready with valid resolution
-        if (state.can_capture) {
+        const rxReady = Boolean(
+            passthrough.rx_stable || (
+                hdmi.signal_locked && ((hdmi.width || 0) > 0 || (hdmi.resolution && hdmi.resolution !== ''))
+            )
+        );
+        const captureReady = isTxDependent ? Boolean(passthrough.can_capture) : rxReady;
+
+        if (captureReady) {
             setDot('auto-passthrough-dot', 'active');
             setText('auto-passthrough-text', 'Ready');
         } else {
@@ -485,9 +539,20 @@ class AutoConfigurator {
             setText('auto-passthrough-text', 'Not Ready');
         }
 
-        // Resolution from TX
-        if (state.width && state.height) {
-            setText('auto-detected-res', `Detected: ${state.width}x${state.height}p${state.framerate || 60}`);
+        setText(
+            'auto-capture-readiness-hint',
+            isTxDependent
+                ? 'Path B uses HDMI TX loopback, so RX must be stable and TX must be ready.'
+                : 'Path A and legacy capture use HDMI RX only. HDMI TX is optional.'
+        );
+
+        const detectedWidth = isTxDependent ? passthrough.width : (hdmi.width || passthrough.width);
+        const detectedHeight = isTxDependent ? passthrough.height : (hdmi.height || passthrough.height);
+        const detectedFps = isTxDependent ? passthrough.framerate : (hdmi.fps || passthrough.framerate || 60);
+        const resolutionSource = isTxDependent ? 'TX' : 'RX';
+
+        if (detectedWidth && detectedHeight) {
+            setText('auto-detected-res', `Detected (${resolutionSource}): ${detectedWidth}x${detectedHeight}p${detectedFps}`);
         } else {
             setText('auto-detected-res', 'Detected: -');
         }
@@ -496,11 +561,9 @@ class AutoConfigurator {
         const hdrStatusEl = document.getElementById('auto-hdr-status');
         const detectedHdrEl = document.getElementById('auto-detected-hdr');
         const useHdrChecked = document.getElementById('auto-use-hdr');
-        const captureSourceEl = document.getElementById('auto-capture-source');
         const hdrEnabled = useHdrChecked ? useHdrChecked.checked : true;
-        const captureSource = captureSourceEl ? captureSourceEl.value : 'vfmcap';
-        const sourceIsHdr = state.source_is_hdr || (state.color_depth && state.color_depth >= 10);
-        const colorDepth = state.color_depth || 8;
+        const sourceIsHdr = passthrough.source_is_hdr || (hdmi.hdr_info > 0) || ((hdmi.color_depth || passthrough.color_depth || 0) >= 10);
+        const colorDepth = hdmi.color_depth || passthrough.color_depth || 8;
         
         // Pipeline mode label depends on capture source
         const pipelineLabel = {
@@ -515,15 +578,15 @@ class AutoConfigurator {
                 // HDR source + HDR enabled → HDR 10-bit pipeline
                 detectedHdrEl.textContent = `HDR ${colorDepth}-bit`;
                 detectedHdrEl.className = 'gst-hdr-badge hdr-active';
-            } else if (!sourceIsHdr && hdrEnabled && state.rx_stable) {
+            } else if (!sourceIsHdr && hdrEnabled && rxReady) {
                 // SDR source + HDR enabled → 10-bit pipeline (force mode)
                 detectedHdrEl.textContent = '10-bit';
                 detectedHdrEl.className = 'gst-hdr-badge hdr-active';
-            } else if (sourceIsHdr && !hdrEnabled && state.rx_stable) {
+            } else if (sourceIsHdr && !hdrEnabled && rxReady) {
                 // HDR source + HDR disabled → show source is HDR but pipeline is SDR
                 detectedHdrEl.textContent = `HDR ${colorDepth}-bit`;
                 detectedHdrEl.className = 'gst-hdr-badge hdr-inactive';
-            } else if (state.rx_stable) {
+            } else if (rxReady) {
                 // SDR source + HDR disabled → plain SDR
                 detectedHdrEl.textContent = `SDR ${colorDepth}-bit`;
                 detectedHdrEl.className = 'gst-hdr-badge hdr-inactive';
@@ -535,7 +598,7 @@ class AutoConfigurator {
 
         // Status line describes both source and pipeline state
         if (hdrStatusEl) {
-            if (!state.rx_stable) {
+            if (!rxReady) {
                 hdrStatusEl.textContent = 'Source: No signal';
                 hdrStatusEl.className = 'gst-hdr-status';
             } else if (sourceIsHdr && hdrEnabled) {

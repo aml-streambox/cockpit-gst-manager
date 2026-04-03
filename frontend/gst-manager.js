@@ -219,7 +219,7 @@ function renderInstancesList() {
                  data-id="${instance.id}">
                 <div class="gst-instance-header">
                     <span class="gst-instance-name">${escapeHtml(instance.name)}</span>
-                    <span class="gst-status-badge gst-status-${instance.status}">${instance.status}</span>
+                    <span class="gst-status-badge gst-status-${instance.status}">${formatStatusLabel(instance.status)}</span>
                 </div>
                 <div class="gst-instance-badges">
                     <span class="gst-badge ${category}">${categoryLabel}</span>
@@ -318,7 +318,7 @@ function updateDetailView() {
     if (!inst) return;
 
     document.getElementById("detail-title").textContent = inst.name;
-    document.getElementById("detail-status").textContent = inst.status;
+    document.getElementById("detail-status").textContent = formatStatusLabel(inst.status);
     document.getElementById("detail-status").className = `gst-status-badge gst-status-${inst.status}`;
     document.getElementById("detail-pid").textContent = inst.pid || "-";
     document.getElementById("detail-error").textContent = inst.error_message || "-";
@@ -328,12 +328,15 @@ function updateDetailView() {
         const cfg = inst.auto_config;
         const rows = [
             ['Type', 'Auto-Generated'],
+            ['Capture Source', formatCaptureSource(cfg.capture_source)],
             ['Encoder', 'H.265 (amlvenc)'],
             ['Bitrate', `${(cfg.bitrate_kbps / 1000).toFixed(1)} Mbps`],
             ['GOP Interval', `${cfg.gop_interval_seconds}s`],
             ['RC Mode', cfg.rc_mode === 1 ? 'CBR' : cfg.rc_mode === 0 ? 'VBR' : 'FixQP'],
             ['Audio', cfg.audio_source === 'hdmi_rx' ? 'HDMI RX' : 'Line In'],
-            ['SRT Port', `${cfg.srt_port}`]
+            ['SRT Port', `${cfg.srt_port}`],
+            ['Debounce', `${cfg.signal_debounce_seconds ?? 2.0}s`],
+            ['Restart Retries', `${cfg.max_restart_retries ?? 5}`]
         ];
         if (cfg.recording_enabled) {
             rows.push(['Recording', cfg.recording_path]);
@@ -612,6 +615,22 @@ function onInstanceStatusChanged(instanceId, status) {
             updateDetailView();
         }
     }
+}
+
+function formatStatusLabel(status) {
+    const labels = {
+        waiting_signal: 'waiting signal'
+    };
+    return labels[status] || status.replace(/_/g, ' ');
+}
+
+function formatCaptureSource(source) {
+    const labels = {
+        vfmcap: 'Path A (RX direct)',
+        vdin1: 'Path B (TX loopback)',
+        v4l2_legacy: 'Legacy RX'
+    };
+    return labels[source] || source || '-';
 }
 
 function onHdmiSignalChanged(available, resolution) {

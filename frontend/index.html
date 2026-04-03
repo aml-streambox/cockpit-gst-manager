@@ -110,7 +110,10 @@
                             </div>
                             <div class="gst-hdmi-indicator-row">
                                 <span class="gst-hdmi-dot" id="auto-passthrough-dot"></span>
-                                <span>Passthrough: <span id="auto-passthrough-text">Unknown</span></span>
+                                <span>Capture Ready: <span id="auto-passthrough-text">Unknown</span></span>
+                            </div>
+                            <div class="gst-detected-hint" id="auto-capture-readiness-hint">
+                                Path A uses HDMI RX only. Path B requires HDMI TX readiness.
                             </div>
                             <div class="gst-detected-resolution" id="auto-detected-res">
                                 Detected: -
@@ -173,6 +176,36 @@
                                     </select>
                                 </div>
                             </div>
+
+                            <h3>Recovery Settings</h3>
+                            <div class="gst-form-row">
+                                <div class="gst-form-group">
+                                    <label for="auto-signal-debounce">Signal Debounce (seconds)</label>
+                                    <input type="number" id="auto-signal-debounce" class="gst-input"
+                                           value="2.0" min="0.5" max="10" step="0.5">
+                                </div>
+                                <div class="gst-form-group">
+                                    <label for="auto-max-restart-retries">Max Restart Retries</label>
+                                    <input type="number" id="auto-max-restart-retries" class="gst-input"
+                                           value="5" min="1" max="20" step="1">
+                                </div>
+                            </div>
+
+                            <div class="gst-form-row">
+                                <div class="gst-form-group">
+                                    <label for="auto-restart-backoff-base">Backoff Base (seconds)</label>
+                                    <input type="number" id="auto-restart-backoff-base" class="gst-input"
+                                           value="1.0" min="0.5" max="10" step="0.5">
+                                </div>
+                                <div class="gst-form-group">
+                                    <label for="auto-restart-backoff-max">Backoff Max (seconds)</label>
+                                    <input type="number" id="auto-restart-backoff-max" class="gst-input"
+                                           value="30.0" min="1" max="120" step="1">
+                                </div>
+                            </div>
+                            <span class="gst-hint">
+                                Debounce delays restart until HDMI timing settles. Backoff applies to unexpected non-signal failures.
+                            </span>
                             
                             <h3>Audio Settings</h3>
                             <div class="gst-form-group">
@@ -207,7 +240,7 @@
                             <label class="gst-toggle-label">
                                 <input type="checkbox" id="auto-autostart" checked>
                                 <span class="gst-toggle-slider"></span>
-                                Start automatically when HDMI passthrough is ready
+                                Start automatically when the selected capture source is ready
                             </label>
                         </div>
                         

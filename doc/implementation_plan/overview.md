@@ -131,6 +131,8 @@ cockpit-gst-manager/
 - [ ] Event trigger system
 - [ ] JSON history storage
 - [ ] Import/export functionality
+- [ ] Manager-driven HDMI auto-capture restart for `streamboxsrc`
+- [ ] TX-independent Path A (`streamboxsrc source=vfmcap`) startup path
 
 ### Phase 3: Dynamic Control
 - [ ] Recording toggle (tee + splitmuxsink)

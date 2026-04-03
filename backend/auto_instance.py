@@ -15,11 +15,13 @@ Capture sources:
 import asyncio
 import json
 import logging
-import time
 from dataclasses import dataclass, asdict
 from enum import Enum
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Optional, Dict, Any
+
+from instances import InstanceStatus
 
 logger = logging.getLogger("gst-manager.auto_instance")
 
@@ -73,6 +75,12 @@ class AutoInstanceConfig:
     
     # Auto-start behavior
     autostart_on_ready: bool = True
+
+    # Restart behavior
+    signal_debounce_seconds: float = 2.0
+    max_restart_retries: int = 5
+    restart_backoff_base: float = 1.0
+    restart_backoff_max: float = 30.0
     
     # Runtime info (from HDMI TX detection)
     width: int = 3840
@@ -340,6 +348,11 @@ class AutoInstanceManager:
         self.config: Optional[AutoInstanceConfig] = None
         self.instance_id: Optional[str] = None
         self._builder = PipelineBuilder()
+        self._restart_task: Optional[asyncio.Task] = None
+        self._restart_generation = 0
+
+        if hasattr(self.instance_manager, "add_exit_callback"):
+            self.instance_manager.add_exit_callback(self.on_instance_exit)
         
     async def load(self) -> bool:
         """Initialize auto instance configuration.
@@ -401,7 +414,7 @@ class AutoInstanceManager:
     async def create_or_update(
         self,
         config: AutoInstanceConfig,
-        hdmi_tx_status: Optional[Any] = None
+        runtime_status: Optional[Any] = None
     ) -> str:
         """Create or update the auto instance.
         
@@ -410,16 +423,12 @@ class AutoInstanceManager:
         
         Args:
             config: New configuration
-            hdmi_tx_status: Current HDMI TX status for resolution detection
+            runtime_status: Current runtime signal status for parameter detection
             
         Returns:
             instance_id: The auto instance ID
         """
-        # Update config with current HDMI TX info if available
-        if hdmi_tx_status:
-            config.width = hdmi_tx_status.width or config.width
-            config.height = hdmi_tx_status.height or config.height
-            config.framerate = hdmi_tx_status.fps or config.framerate
+        self._apply_runtime_status_to_config(config, runtime_status)
         
         # Update HDR info from event manager's RX status
         if self.event_manager:
@@ -459,7 +468,11 @@ class AutoInstanceManager:
             instance.instance_type = InstanceType.AUTO
             instance.auto_config = config.to_dict()
             instance.autostart = config.autostart_on_ready
-            instance.trigger_event = "hdmi_passthrough_ready"
+            instance.trigger_event = (
+                "hdmi_passthrough_ready"
+                if config.capture_source == CaptureSource.VDIN1
+                else "hdmi_signal_ready"
+            )
             logger.info(f"Marked instance {instance_id} as AUTO type, autostart={instance.autostart}")
             
             # Re-save to persist the instance_type change
@@ -481,139 +494,358 @@ class AutoInstanceManager:
             Formatted pipeline string with line breaks
         """
         return self._builder.build_preview(config)
-    
+
     async def on_passthrough_ready(self, hdmi_tx_status: Any) -> None:
-        """Called when HDMI passthrough becomes ready.
-        
-        Starts the auto instance if autostart is enabled.
-        
-        Args:
-            hdmi_tx_status: Current HDMI TX status
-        """
-        if not self.config:
-            logger.debug("No auto instance config, skipping passthrough ready")
+        """Start TX-dependent auto capture when passthrough is ready."""
+        if self._requires_tx_dependency():
+            await self._ensure_auto_instance_running(
+                trigger="passthrough_ready",
+                runtime_status=hdmi_tx_status,
+            )
+
+    async def on_hdmi_signal_ready(self, hdmi_status: Any) -> None:
+        """Start RX-driven capture paths when HDMI RX becomes stable."""
+        if not self._requires_tx_dependency():
+            await self._ensure_auto_instance_running(
+                trigger="hdmi_signal_ready",
+                runtime_status=hdmi_status,
+            )
+
+    async def on_instance_exit(self, exit_info: Any) -> None:
+        """Handle auto-instance process exits and schedule recovery."""
+        if not self.config or not self.instance_id:
             return
-        
+        if exit_info.instance_id != self.instance_id:
+            return
+
+        if exit_info.intentional:
+            self._cancel_restart_task()
+            return
+
+        signal_change = getattr(exit_info, "signal_change", None)
+        if signal_change and signal_change.reason == "signal-lost":
+            await self._mark_waiting_for_signal(signal_change.reason)
+            self._cancel_restart_task()
+            return
+
+        if signal_change:
+            logger.info(
+                "Scheduling auto restart after %ss for reason=%s",
+                self.config.signal_debounce_seconds,
+                signal_change.reason,
+            )
+            self._schedule_restart(
+                reason=signal_change.reason,
+                signal_info=signal_change.to_dict(),
+                attempt=0,
+                use_debounce=True,
+            )
+            return
+
+        logger.warning(
+            "Auto instance %s exited unexpectedly (code=%s), scheduling retry",
+            exit_info.instance_id,
+            exit_info.exit_code,
+        )
+        self._schedule_restart(
+            reason="process-exit",
+            signal_info=None,
+            attempt=0,
+            use_debounce=False,
+        )
+
+    async def _ensure_auto_instance_running(
+        self,
+        trigger: str,
+        runtime_status: Optional[Any] = None,
+    ) -> None:
+        """Ensure the auto instance matches the current signal and is running."""
+        if not self.config:
+            logger.debug("No auto instance config, skipping %s", trigger)
+            return
         if not self.config.autostart_on_ready:
             logger.debug("Auto-start disabled")
             return
-        
-        # Update resolution from current TX status
-        self.config.width = hdmi_tx_status.width or self.config.width
-        self.config.height = hdmi_tx_status.height or self.config.height
-        self.config.framerate = hdmi_tx_status.fps or self.config.framerate
-        
-        # Update HDR info from event manager's RX status
-        source_is_hdr = False
-        if self.event_manager:
-            rx_status = self.event_manager.get_hdmi_status()
-            self.config.source_color_depth = rx_status.get("color_depth", 8)
-            source_is_hdr = rx_status.get("hdr_info", 0) > 0
-            self.config.source_is_hdr = source_is_hdr
-        
-        # For auto-start, gate HDR on actual source capability:
-        # user wants HDR (use_hdr=True) but source is SDR -> use SDR pipeline.
-        # We temporarily adjust use_hdr for pipeline generation, then restore it
-        # so the saved preference is preserved.
-        original_use_hdr = self.config.use_hdr
-        if self.config.use_hdr and not source_is_hdr:
-            logger.info("Auto-start: source is not HDR, falling back to SDR pipeline")
-            self.config.use_hdr = False
+        if not self._can_start_for_current_source():
+            logger.debug("Auto instance not ready to start for trigger=%s", trigger)
+            return
+
+        self._cancel_restart_task()
 
         desired_config = AutoInstanceConfig.from_dict(self.config.to_dict())
+        self._apply_runtime_status_to_config(desired_config, runtime_status)
+        self._apply_event_manager_status(desired_config)
+
+        original_use_hdr = desired_config.use_hdr
+        if desired_config.use_hdr and not desired_config.source_is_hdr:
+            logger.info("Auto-start: source is not HDR, falling back to SDR pipeline")
+            desired_config.use_hdr = False
+
         desired_pipeline = self._builder.build(desired_config)
-        
-        # Recreate the auto instance whenever the desired HDMI-driven pipeline
-        # differs from the currently managed one. This is critical for HDMI
-        # mode changes where passthrough stays logically ready but the old
-        # pipeline exits shortly afterward due to a resolution/framerate change.
+
         if self.instance_id:
             instance = self.instance_manager.get_instance(self.instance_id)
             if instance and instance.pipeline != desired_pipeline:
                 logger.info(
-                    "Auto instance pipeline no longer matches current HDMI state; "
-                    "recreating for new parameters"
+                    "Auto instance pipeline no longer matches current signal; recreating"
                 )
-                await self.create_or_update(self.config, hdmi_tx_status)
-            elif instance and instance.status.value in ("stopped", "error"):
-                logger.info(f"Recreating auto instance (was {instance.status.value}) with updated resolution")
-                await self.create_or_update(self.config, hdmi_tx_status)
+                await self.create_or_update(desired_config, runtime_status)
+            elif instance and instance.status.value in (
+                "stopped",
+                "error",
+                "waiting_signal",
+            ):
+                logger.info(
+                    "Recreating auto instance (was %s) for trigger=%s",
+                    instance.status.value,
+                    trigger,
+                )
+                await self.create_or_update(desired_config, runtime_status)
             elif not instance:
-                # Instance was deleted externally
-                logger.info("Auto instance was deleted, creating new one")
+                logger.info("Auto instance disappeared, creating new one")
                 self.instance_id = None
-                await self.create_or_update(self.config, hdmi_tx_status)
+                await self.create_or_update(desired_config, runtime_status)
         else:
-            # Create new instance
-            logger.info("Creating auto instance for passthrough")
-            await self.create_or_update(self.config, hdmi_tx_status)
-        
-        # Restore the user's HDR preference so it's not lost in saved config
+            logger.info("Creating auto instance for trigger=%s", trigger)
+            await self.create_or_update(desired_config, runtime_status)
+
         self.config.use_hdr = original_use_hdr
-        if original_use_hdr and not source_is_hdr:
-            # Re-save with the restored preference so it persists correctly
-            await self.save()
-        
-        # Start the instance
-        if self.instance_id:
-            try:
-                # Wait for vdin1/VPP writeback to fully stabilize after HDMI reconnect.
-                # The TX check delay (1.5s) may not be enough for the capture path.
-                await asyncio.sleep(2.0)
-                
-                # Verify passthrough is still valid (signal didn't drop again)
-                if self.event_manager:
-                    state = self.event_manager.get_passthrough_state()
-                    if not state.get("can_capture"):
-                        logger.warning("Passthrough lost during stabilization delay, aborting start")
-                        return
-                
-                instance = self.instance_manager.get_instance(self.instance_id)
-                if not instance:
-                    logger.warning("Auto instance disappeared before start")
-                    return
+        await self.save()
 
-                if instance.status.value == "running":
-                    logger.info(f"Auto instance {self.instance_id} already running with current pipeline")
-                    return
-
-                await self.instance_manager.start_instance(self.instance_id)
-                logger.info(f"Auto-started instance {self.instance_id}")
-            except Exception as e:
-                logger.error(f"Failed to auto-start instance: {e}")
-    
-    async def on_passthrough_lost(self) -> None:
-        """Called when HDMI passthrough is lost.
-        
-        Stops the auto instance if it's running, and ensures it ends up
-        in 'stopped' state (not 'error') so it can be restarted later.
-        """
         if not self.instance_id:
             return
-        
+
+        try:
+            stabilization_delay = 2.0 if self._requires_tx_dependency() else 0.0
+            if stabilization_delay > 0:
+                await asyncio.sleep(stabilization_delay)
+            if not self._can_start_for_current_source():
+                logger.warning("Capture readiness lost during stabilization delay")
+                return
+
+            instance = self.instance_manager.get_instance(self.instance_id)
+            if not instance:
+                logger.warning("Auto instance disappeared before start")
+                return
+            if instance.status == InstanceStatus.RUNNING:
+                logger.info(
+                    "Auto instance %s already running with current pipeline",
+                    self.instance_id,
+                )
+                return
+
+            await self.instance_manager.start_instance(self.instance_id)
+            logger.info("Auto-started instance %s via %s", self.instance_id, trigger)
+        except Exception as e:
+            logger.error(f"Failed to auto-start instance: {e}")
+            raise
+
+    async def on_passthrough_lost(self) -> None:
+        """Stop TX-dependent auto capture when passthrough is lost."""
+        if self._requires_tx_dependency():
+            await self._handle_capture_lost("passthrough lost")
+
+    async def on_hdmi_signal_lost(self) -> None:
+        """Stop RX-driven auto capture when HDMI RX is lost."""
+        if not self._requires_tx_dependency():
+            await self._handle_capture_lost("hdmi signal lost")
+
+    async def _handle_capture_lost(self, reason: str) -> None:
+        """Stop the auto instance when its capture source becomes unavailable."""
+        self._cancel_restart_task()
+        if not self.instance_id:
+            return
+
         instance = self.instance_manager.get_instance(self.instance_id)
         if not instance:
             return
-        
         if instance.status.value == "running":
             try:
                 await self.instance_manager.stop_instance(self.instance_id)
-                logger.info(f"Auto-stopped instance {self.instance_id} due to passthrough loss")
+                logger.info("Auto-stopped instance %s due to %s", self.instance_id, reason)
             except Exception as e:
                 logger.error(f"Failed to auto-stop instance: {e}")
-        
-        # Ensure the instance is in 'stopped' state regardless.
-        # The gst-launch process may have already crashed with an error
-        # (e.g. v4l2src lost signal) before we got here, leaving the
-        # instance in 'error' state. Force it to 'stopped' so
-        # on_passthrough_ready() can restart it cleanly.
-        instance = self.instance_manager.get_instance(self.instance_id)
-        if instance and instance.status.value == "error":
-            logger.info(f"Clearing error state for instance {self.instance_id} (passthrough lost)")
-            from instances import InstanceStatus
-            instance.status = InstanceStatus.STOPPED
-            instance.error_message = None
-            instance.retry_count = 0
+
+        await self._mark_waiting_for_signal(reason)
+
+    async def _mark_waiting_for_signal(self, reason: str) -> None:
+        """Move the current auto instance into waiting-signal state."""
+        if not self.instance_id:
+            return
+
+        await self.instance_manager.set_instance_status(
+            self.instance_id,
+            InstanceStatus.WAITING_SIGNAL,
+            error_message=reason,
+        )
+
+    def _cancel_restart_task(self) -> None:
+        """Cancel any pending restart task."""
+        if self._restart_task and not self._restart_task.done():
+            self._restart_task.cancel()
+        self._restart_task = None
+
+    def _schedule_restart(
+        self,
+        reason: str,
+        signal_info: Optional[Dict[str, Any]],
+        attempt: int,
+        use_debounce: bool,
+    ) -> None:
+        """Schedule an asynchronous restart attempt."""
+        self._restart_generation += 1
+        generation = self._restart_generation
+        self._cancel_restart_task()
+        self._restart_task = asyncio.create_task(
+            self._restart_after_delay(
+                generation=generation,
+                reason=reason,
+                signal_info=signal_info,
+                attempt=attempt,
+                use_debounce=use_debounce,
+            )
+        )
+
+    async def _restart_after_delay(
+        self,
+        generation: int,
+        reason: str,
+        signal_info: Optional[Dict[str, Any]],
+        attempt: int,
+        use_debounce: bool,
+    ) -> None:
+        """Restart the auto instance after debounce or backoff delay."""
+        try:
+            if not self.config:
+                return
+
+            delay = 0.0
+            if use_debounce:
+                delay = max(0.0, float(self.config.signal_debounce_seconds))
+            elif attempt > 0 or reason == "process-exit":
+                delay = min(
+                    float(self.config.restart_backoff_base) * (2 ** attempt),
+                    float(self.config.restart_backoff_max),
+                )
+            if delay > 0:
+                await asyncio.sleep(delay)
+
+            if generation != self._restart_generation:
+                return
+
+            runtime_status = self._get_runtime_status_for_source(signal_info)
+            if not self._can_start_for_current_source():
+                await self._mark_waiting_for_signal(f"waiting after {reason}")
+                return
+
+            await self._ensure_auto_instance_running(
+                trigger=f"restart:{reason}",
+                runtime_status=runtime_status,
+            )
+        except asyncio.CancelledError:
+            logger.debug("Auto restart task cancelled")
+        except Exception as e:
+            logger.error("Auto restart attempt failed: %s", e)
+            if not self.config or attempt + 1 >= self.config.max_restart_retries:
+                if self.instance_id:
+                    await self.instance_manager.set_instance_status(
+                        self.instance_id,
+                        InstanceStatus.ERROR,
+                        error_message=str(e),
+                    )
+                return
+            self._schedule_restart(
+                reason=reason,
+                signal_info=signal_info,
+                attempt=attempt + 1,
+                use_debounce=False,
+            )
+
+    def _apply_event_manager_status(self, config: AutoInstanceConfig) -> None:
+        """Update runtime fields from the latest event-manager state."""
+        if not self.event_manager:
+            return
+
+        rx_status = self.event_manager.get_hdmi_status()
+        config.source_color_depth = int(rx_status.get("color_depth", 8) or 8)
+        config.source_is_hdr = bool(rx_status.get("hdr_info", 0) > 0)
+
+        if not self._requires_tx_dependency():
+            config.width = int(rx_status.get("width", config.width) or config.width)
+            config.height = int(rx_status.get("height", config.height) or config.height)
+            config.framerate = int(rx_status.get("fps", config.framerate) or config.framerate)
+
+    def _apply_runtime_status_to_config(
+        self,
+        config: AutoInstanceConfig,
+        runtime_status: Optional[Any],
+    ) -> None:
+        """Update runtime dimensions from a status mapping or object."""
+        if not runtime_status:
+            return
+
+        def _value(name: str, default: int) -> int:
+            if isinstance(runtime_status, dict):
+                return int(runtime_status.get(name, default) or default)
+            return int(getattr(runtime_status, name, default) or default)
+
+        config.width = _value("width", config.width)
+        config.height = _value("height", config.height)
+        fps_value = _value("fps", config.framerate)
+        if fps_value == config.framerate and isinstance(runtime_status, dict):
+            fps_value = int(runtime_status.get("framerate", fps_value) or fps_value)
+        config.framerate = fps_value
+
+    def _requires_tx_dependency(self) -> bool:
+        """Check whether the current capture source depends on HDMI TX."""
+        if not self.config:
+            return False
+        return self.config.capture_source == CaptureSource.VDIN1
+
+    def _can_start_for_current_source(self) -> bool:
+        """Check whether the active capture path is ready to start."""
+        if not self.event_manager or not self.config:
+            return True
+
+        if self._requires_tx_dependency():
+            return bool(self.event_manager.get_passthrough_state().get("can_capture"))
+
+        hdmi_status = self.event_manager.get_hdmi_status()
+        return bool(
+            hdmi_status.get("cable_connected", True)
+            and hdmi_status.get("available", True)
+            and hdmi_status.get("signal_locked")
+            and hdmi_status.get("width", 0) > 0
+            and hdmi_status.get("height", 0) > 0
+        )
+
+    def _get_runtime_status_for_source(
+        self,
+        signal_info: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Any]:
+        """Build runtime status from live state with signal-info fallback."""
+        if self.event_manager and self.config:
+            if self._requires_tx_dependency():
+                state = self.event_manager.get_passthrough_state()
+                if state.get("width") and state.get("height"):
+                    return SimpleNamespace(
+                        width=state.get("width", 0),
+                        height=state.get("height", 0),
+                        fps=state.get("framerate", 0),
+                    )
+            else:
+                status = self.event_manager.get_hdmi_status()
+                if status.get("width") and status.get("height"):
+                    return status
+
+        if signal_info:
+            return {
+                "width": signal_info.get("width", 0),
+                "height": signal_info.get("height", 0),
+                "fps": signal_info.get("fps", 0),
+            }
+
+        return None
     
     def get_config(self) -> Optional[Dict[str, Any]]:
         """Get current config as dict.
@@ -658,6 +890,14 @@ class AutoInstanceManager:
             self.config.autostart_on_ready = bool(updates["autostart_on_ready"])
         if "use_hdr" in updates:
             self.config.use_hdr = bool(updates["use_hdr"])
+        if "signal_debounce_seconds" in updates:
+            self.config.signal_debounce_seconds = float(updates["signal_debounce_seconds"])
+        if "max_restart_retries" in updates:
+            self.config.max_restart_retries = int(updates["max_restart_retries"])
+        if "restart_backoff_base" in updates:
+            self.config.restart_backoff_base = float(updates["restart_backoff_base"])
+        if "restart_backoff_max" in updates:
+            self.config.restart_backoff_max = float(updates["restart_backoff_max"])
         
         # Recreate instance with new pipeline if it exists and is stopped
         if self.instance_id:

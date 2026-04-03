@@ -9,13 +9,20 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "backend"))
 
-from auto_instance import AutoInstanceConfig, AutoInstanceManager
+from auto_instance import AutoInstanceConfig, AutoInstanceManager, CaptureSource
 from instances import Instance, InstanceStatus, InstanceType
 
 
 class DummyEventManager:
     def get_hdmi_status(self):
-        return {"color_depth": 8, "hdr_info": 0}
+        return {
+            "color_depth": 8,
+            "hdr_info": 0,
+            "signal_locked": True,
+            "width": 1920,
+            "height": 1080,
+            "fps": 60,
+        }
 
     def get_passthrough_state(self):
         return {"can_capture": True}
@@ -41,7 +48,14 @@ async def test_passthrough_ready_recreates_running_auto_instance_on_resolution_c
     )
 
     manager = AutoInstanceManager(instance_manager, event_manager=DummyEventManager())
-    manager.config = AutoInstanceConfig(width=3840, height=2160, framerate=60, autostart_on_ready=True, use_hdr=False)
+    manager.config = AutoInstanceConfig(
+        capture_source=CaptureSource.VDIN1,
+        width=3840,
+        height=2160,
+        framerate=60,
+        autostart_on_ready=True,
+        use_hdr=False,
+    )
     manager.instance_id = "auto1234"
 
     old_pipeline = manager._builder.build(manager.config)
@@ -92,7 +106,14 @@ async def test_passthrough_ready_skips_recreate_when_running_pipeline_matches(no
     )
 
     manager = AutoInstanceManager(instance_manager, event_manager=DummyEventManager())
-    manager.config = AutoInstanceConfig(width=3840, height=2160, framerate=60, autostart_on_ready=True, use_hdr=False)
+    manager.config = AutoInstanceConfig(
+        capture_source=CaptureSource.VDIN1,
+        width=3840,
+        height=2160,
+        framerate=60,
+        autostart_on_ready=True,
+        use_hdr=False,
+    )
     manager.instance_id = "auto1234"
 
     pipeline = manager._builder.build(manager.config)
@@ -115,3 +136,47 @@ async def test_passthrough_ready_skips_recreate_when_running_pipeline_matches(no
 
     recreated.assert_not_awaited()
     instance_manager.start_instance.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_hdmi_signal_ready_starts_vfmcap_without_tx_dependency(no_sleep):
+    history = SimpleNamespace(save_instance=AsyncMock())
+    instance_manager = SimpleNamespace(
+        get_instance=Mock(),
+        start_instance=AsyncMock(),
+        create_instance=AsyncMock(return_value="auto1234"),
+        stop_instance=AsyncMock(),
+        delete_instance=AsyncMock(),
+        history_manager=history,
+    )
+
+    manager = AutoInstanceManager(instance_manager, event_manager=DummyEventManager())
+    manager.config = AutoInstanceConfig(
+        capture_source=CaptureSource.VFMCAP,
+        width=1920,
+        height=1080,
+        framerate=60,
+        autostart_on_ready=True,
+        use_hdr=False,
+    )
+    manager.instance_id = "auto1234"
+
+    stopped_instance = Instance(
+        id="auto1234",
+        name="Auto HDMI Capture",
+        pipeline="old-pipeline",
+        instance_type=InstanceType.AUTO,
+        auto_config=manager.config.to_dict(),
+        status=InstanceStatus.STOPPED,
+    )
+    instance_manager.get_instance.return_value = stopped_instance
+
+    recreated = AsyncMock(return_value="auto1234")
+    manager.create_or_update = recreated
+
+    hdmi_status = {"width": 1280, "height": 720, "fps": 60, "hdr_info": 0}
+
+    await manager.on_hdmi_signal_ready(hdmi_status)
+
+    recreated.assert_awaited_once()
+    instance_manager.start_instance.assert_awaited_once_with("auto1234")

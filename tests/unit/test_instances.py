@@ -211,3 +211,55 @@ class TestErrorRecovery:
         assert any(f in "No such file or directory".lower() for f in FATAL_ERRORS)
         assert any(f in "permission denied".lower() for f in FATAL_ERRORS)
         assert any(f in "no element 'invalid'".lower() for f in FATAL_ERRORS)
+
+
+class TestSignalChangeParsing:
+    """Tests for hdmi-signal-change stderr parsing."""
+
+    def test_parse_signal_change_from_stderr(self, instance_manager):
+        stderr_text = (
+            'message: hdmi-signal-change, reason=(string)signal-changed, '
+            'width=(uint)3840, height=(uint)2160, frame-rate=(uint)5994, '
+            'color-space=(string)YUV422, color-depth=(uint)10, '
+            'hdr-eotf=(string)HDR10, dolby-vision=(uint)0, interlace=(uint)0;'
+        )
+
+        parsed = instance_manager._parse_signal_change(stderr_text)
+
+        assert parsed is not None
+        assert parsed.reason == "signal-changed"
+        assert parsed.width == 3840
+        assert parsed.height == 2160
+        assert parsed.frame_rate_raw == 5994
+        assert parsed.fps == 60
+        assert parsed.color_depth == 10
+        assert parsed.hdr_eotf == "HDR10"
+
+    def test_parse_frame_acquire_timeout_as_signal_timeout(self, instance_manager):
+        stderr_text = "Frame acquire timeout (frame 4429)\nstreaming stopped, reason error (-5)"
+
+        parsed = instance_manager._parse_signal_change(stderr_text)
+
+        assert parsed is not None
+        assert parsed.reason == "signal-timeout"
+
+
+class TestStartTimeout:
+    @pytest.mark.asyncio
+    async def test_start_instance_times_out_when_subprocess_hangs(self, instance_manager, monkeypatch):
+        async def _hung_exec(*_args, **_kwargs):
+            await asyncio.sleep(60)
+
+        monkeypatch.setattr("asyncio.create_subprocess_exec", _hung_exec)
+        instance_manager.start_command_timeout = 0.01
+
+        instance_id = await instance_manager.create_instance(
+            "Hung Start",
+            "fakesrc ! fakesink"
+        )
+
+        result = await instance_manager.start_instance(instance_id)
+
+        assert result is False
+        assert instance_manager.instances[instance_id].status == InstanceStatus.ERROR
+        assert "timed out" in instance_manager.instances[instance_id].error_message.lower()

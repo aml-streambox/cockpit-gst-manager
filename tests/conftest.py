@@ -94,6 +94,7 @@ def mock_subprocess():
         process.communicate = AsyncMock(return_value=(b"", b""))
         process.terminate = MagicMock()
         process.kill = MagicMock()
+        process.send_signal = MagicMock()
         process.wait = AsyncMock()
         mock.return_value = process
         yield mock

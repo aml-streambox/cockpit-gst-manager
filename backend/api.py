@@ -518,6 +518,10 @@ if DBUS_LIBRARY == "dbus_next":
                     - recording_path: str
                     - autostart_on_ready: bool
                     - use_hdr: bool
+                    - signal_debounce_seconds: float
+                    - max_restart_retries: int
+                    - restart_backoff_base: float
+                    - restart_backoff_max: float
                     
             Returns:
                 success: True if applied
@@ -541,27 +545,31 @@ if DBUS_LIBRARY == "dbus_next":
                     recording_enabled=config_data.get("recording_enabled", False),
                     recording_path=config_data.get("recording_path", "/mnt/sdcard/recordings/capture.ts"),
                     autostart_on_ready=config_data.get("autostart_on_ready", True),
-                    use_hdr=config_data.get("use_hdr", True)
+                    use_hdr=config_data.get("use_hdr", True),
+                    signal_debounce_seconds=config_data.get("signal_debounce_seconds", 2.0),
+                    max_restart_retries=config_data.get("max_restart_retries", 5),
+                    restart_backoff_base=config_data.get("restart_backoff_base", 1.0),
+                    restart_backoff_max=config_data.get("restart_backoff_max", 30.0),
                 )
                 
-                # Get current HDMI TX status for resolution
-                tx_status = None
+                # Get current runtime status for resolution
+                runtime_status = None
                 if self.event_manager:
-                    state = self.event_manager.get_passthrough_state()
-                    if state.get("width"):
-                        # Create mock TX status for resolution
-                        class MockTxStatus:
-                            pass
-                        tx_status = MockTxStatus()
-                        tx_status.width = state.get("width", 3840)
-                        tx_status.height = state.get("height", 2160)
-                        tx_status.fps = state.get("framerate", 60)
-                        tx_status.connected = state.get("tx_connected", False)
-                        tx_status.ready = state.get("tx_ready", False)
-                        tx_status.enabled = state.get("tx_enabled", False)
-                        tx_status.passthrough = state.get("passthrough_active", False)
-                
-                await self.auto_instance_manager.create_or_update(config, tx_status)
+                    if config.capture_source.value == "vdin1":
+                        state = self.event_manager.get_passthrough_state()
+                        if state.get("width"):
+                            class MockRuntimeStatus:
+                                pass
+                            runtime_status = MockRuntimeStatus()
+                            runtime_status.width = state.get("width", 3840)
+                            runtime_status.height = state.get("height", 2160)
+                            runtime_status.fps = state.get("framerate", 60)
+                    else:
+                        status = self.event_manager.get_hdmi_status()
+                        if status.get("width"):
+                            runtime_status = status
+
+                await self.auto_instance_manager.create_or_update(config, runtime_status)
                 return True
                 
             except Exception as e:
@@ -591,17 +599,29 @@ if DBUS_LIBRARY == "dbus_next":
                     srt_port=config_data.get("srt_port", 8888),
                     recording_enabled=config_data.get("recording_enabled", False),
                     recording_path=config_data.get("recording_path", "/mnt/sdcard/recordings/capture.ts"),
-                    use_hdr=config_data.get("use_hdr", True)
+                    use_hdr=config_data.get("use_hdr", True),
+                    signal_debounce_seconds=config_data.get("signal_debounce_seconds", 2.0),
+                    max_restart_retries=config_data.get("max_restart_retries", 5),
+                    restart_backoff_base=config_data.get("restart_backoff_base", 1.0),
+                    restart_backoff_max=config_data.get("restart_backoff_max", 30.0),
                 )
-                
+
                 # Use detected resolution and HDR info if available
                 if self.event_manager:
-                    state = self.event_manager.get_passthrough_state()
-                    config.width = state.get("width", 3840)
-                    config.height = state.get("height", 2160)
-                    config.framerate = state.get("framerate", 60)
-                    config.source_color_depth = state.get("color_depth", 8)
-                    config.source_is_hdr = state.get("source_is_hdr", False)
+                    if config.capture_source.value == "vdin1":
+                        state = self.event_manager.get_passthrough_state()
+                        config.width = state.get("width", 3840)
+                        config.height = state.get("height", 2160)
+                        config.framerate = state.get("framerate", 60)
+                        config.source_color_depth = state.get("color_depth", 8)
+                        config.source_is_hdr = state.get("source_is_hdr", False)
+                    else:
+                        status = self.event_manager.get_hdmi_status()
+                        config.width = status.get("width", 3840)
+                        config.height = status.get("height", 2160)
+                        config.framerate = status.get("fps", 60)
+                        config.source_color_depth = status.get("color_depth", 8)
+                        config.source_is_hdr = status.get("hdr_info", 0) > 0
                 
                 builder = PipelineBuilder()
                 return builder.build_preview(config)

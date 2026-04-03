@@ -77,6 +77,31 @@ Pipeline Running
 3. Monitor for HDMI signal return
 4. If `autostart` enabled and signal returns → auto-restart pipeline
 
+### HDMI Signal Change With New Timing
+1. Let `streamboxsrc` post `hdmi-signal-change` and exit with EOS
+2. Parse the signal-change details from `gst-launch-1.0` stderr
+3. Debounce for the configured interval
+4. Re-read current HDMI RX or HDMI TX parameters, depending on capture source
+5. Regenerate the pipeline and restart automatically
+
+### HDMI Unplug And Stale Status Protection
+- Prefer `tvservice` as the authoritative HDMI RX state source when available
+- Treat sysfs `info` as advisory only because some Amlogic builds keep stale
+  resolution data after unplug
+- When sysfs fallback is required, use `TMDS clock: 0` as a no-signal hint
+- Do not restart RX-driven auto capture unless cable, lock, width, and height
+  are all valid at the same time
+
+### Startup Watchdog
+- Instance launch now has a subprocess creation timeout
+- Instances that remain in `starting` too long are moved to `error`
+- Auto-recovery logic can then retry instead of leaving the UI stuck forever
+
+### Capture Path Rules
+- `streamboxsrc source=vfmcap`: start from HDMI RX stability only, no TX dependency
+- `streamboxsrc source=vdin1`: requires HDMI TX readiness because the source is a
+  loopback / screen-recording path
+
 ### Storage Full (During Recording)
 1. Stop recording branch only
 2. Continue streaming if active

@@ -1059,6 +1059,12 @@ body {
     color: var(--gst-color-text-muted);
 }
 
+.gst-detected-hint {
+    margin-top: var(--gst-spacing-sm);
+    font-size: 12px;
+    color: var(--gst-color-text-muted);
+}
+
 /* HDR Badge & Status */
 .gst-hdr-badge {
     display: inline-block;
@@ -1287,6 +1293,13 @@ body {
 
 .gst-status-text {
     font-size: 14px;
+    color: var(--gst-color-text-muted);
+}
+
+.gst-status-subtext {
+    display: block;
+    margin-top: 2px;
+    font-size: 12px;
     color: var(--gst-color-text-muted);
 }
 
