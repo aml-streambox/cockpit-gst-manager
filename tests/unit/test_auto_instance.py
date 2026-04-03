@@ -9,7 +9,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "backend"))
 
-from auto_instance import AutoInstanceConfig, AutoInstanceManager, CaptureSource
+from auto_instance import AutoInstanceConfig, AutoInstanceManager, CaptureSource, OutputCodec, PipelineBuilder
 from instances import Instance, InstanceStatus, InstanceType
 
 
@@ -180,3 +180,141 @@ async def test_hdmi_signal_ready_starts_vfmcap_without_tx_dependency(no_sleep):
 
     recreated.assert_awaited_once()
     instance_manager.start_instance.assert_awaited_once_with("auto1234")
+
+
+def test_prepare_recording_path_creates_parent_dir(tmp_path):
+    history = SimpleNamespace(save_instance=AsyncMock())
+    instance_manager = SimpleNamespace(
+        get_instance=Mock(),
+        start_instance=AsyncMock(),
+        create_instance=AsyncMock(return_value="auto1234"),
+        stop_instance=AsyncMock(),
+        delete_instance=AsyncMock(),
+        history_manager=history,
+    )
+
+    manager = AutoInstanceManager(instance_manager, event_manager=DummyEventManager())
+    config = AutoInstanceConfig(
+        recording_enabled=True,
+        recording_path=str(tmp_path / "captures" / "session01.ts"),
+    )
+
+    manager._prepare_recording_path(config)
+
+    assert config.recording_path.endswith("session01.ts")
+    assert (tmp_path / "captures").is_dir()
+
+
+def test_prepare_recording_path_appends_timestamp_filename_for_directory(tmp_path, monkeypatch):
+    history = SimpleNamespace(save_instance=AsyncMock())
+    instance_manager = SimpleNamespace(
+        get_instance=Mock(),
+        start_instance=AsyncMock(),
+        create_instance=AsyncMock(return_value="auto1234"),
+        stop_instance=AsyncMock(),
+        delete_instance=AsyncMock(),
+        history_manager=history,
+    )
+
+    manager = AutoInstanceManager(instance_manager, event_manager=DummyEventManager())
+    monkeypatch.setattr("auto_instance.time.strftime", lambda *_args, **_kwargs: "20260403-173000")
+    config = AutoInstanceConfig(
+        recording_enabled=False,
+        recording_path=str(tmp_path / "captures") + "/",
+    )
+
+    manager._prepare_recording_path(config)
+
+    assert config.recording_path.endswith("captures/capture-20260403-173000.ts")
+
+
+def test_pipeline_builder_applies_gop_preset():
+    config = AutoInstanceConfig(
+        capture_source=CaptureSource.VFMCAP,
+        use_hdr=False,
+        gop_pattern=7,
+        bitrate_kbps=12000,
+        rc_mode=1,
+        framerate=60,
+    )
+
+    builder = PipelineBuilder()
+    builder._supports_full_fixed_qp = lambda: True
+    pipeline = builder.build(config)
+
+    assert "gop-pattern=7" in pipeline
+    assert "bitrate=12000" in pipeline
+    assert "rc-mode=1" in pipeline
+
+
+def test_pipeline_builder_applies_lossless_mode():
+    config = AutoInstanceConfig(
+        capture_source=CaptureSource.VFMCAP,
+        use_hdr=True,
+        lossless_enable=True,
+        gop_pattern=4,
+        framerate=60,
+    )
+
+    builder = PipelineBuilder()
+    builder._supports_full_fixed_qp = lambda: True
+    pipeline = builder.build(config)
+    encoder_section = pipeline.split('! video/x-h265', 1)[0]
+
+    assert "lossless-enable=true" in pipeline
+    assert "gop-pattern=4" in pipeline
+    assert "bitrate=" not in encoder_section
+    assert "rc-mode=" not in encoder_section
+
+
+def test_pipeline_builder_supports_h264_output():
+    config = AutoInstanceConfig(
+        capture_source=CaptureSource.VFMCAP,
+        output_codec=OutputCodec.H264,
+        use_hdr=False,
+    )
+
+    builder = PipelineBuilder()
+    builder._supports_full_fixed_qp = lambda: True
+    pipeline = builder.build(config)
+
+    assert "video/x-h264" in pipeline
+    assert "h264parse config-interval=-1" in pipeline
+    assert "video/x-h265" not in pipeline
+
+
+def test_pipeline_builder_applies_fixed_qp_value_in_cqp_mode():
+    config = AutoInstanceConfig(
+        capture_source=CaptureSource.VFMCAP,
+        output_codec=OutputCodec.H265,
+        use_hdr=False,
+        rc_mode=2,
+        fixed_qp_value=23,
+    )
+
+    builder = PipelineBuilder()
+    builder._supports_full_fixed_qp = lambda: True
+    pipeline = builder.build(config)
+    encoder_section = pipeline.split('! video/x-h265', 1)[0]
+
+    assert "rc-mode=2" in encoder_section
+    assert "qp-i=23" in encoder_section
+    assert "qp-p=23" in encoder_section
+    assert "qp-b=23" in encoder_section
+
+
+def test_pipeline_builder_falls_back_to_qp_b_when_plugin_lacks_qp_i_p():
+    config = AutoInstanceConfig(
+        capture_source=CaptureSource.VFMCAP,
+        rc_mode=2,
+        fixed_qp_value=19,
+    )
+
+    builder = PipelineBuilder()
+    builder._supports_full_fixed_qp = lambda: False
+    pipeline = builder.build(config)
+    encoder_section = pipeline.split('! video/x-h265', 1)[0]
+
+    assert "qp-b=19" in encoder_section
+    assert "qp-i=" not in encoder_section
+    assert "qp-p=" not in encoder_section

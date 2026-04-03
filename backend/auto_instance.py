@@ -15,6 +15,8 @@ Capture sources:
 import asyncio
 import json
 import logging
+import subprocess
+import time
 from dataclasses import dataclass, asdict
 from enum import Enum
 from pathlib import Path
@@ -24,6 +26,8 @@ from typing import Optional, Dict, Any
 from instances import InstanceStatus
 
 logger = logging.getLogger("gst-manager.auto_instance")
+
+_AMLVENC_QP_PROPERTY_CACHE: Optional[bool] = None
 
 
 class CaptureSource(Enum):
@@ -44,6 +48,13 @@ class AudioSource(Enum):
     LINE_IN = "line_in"  # hw:0,0 - Line in audio
 
 
+class OutputCodec(Enum):
+    """Encoder output codec options."""
+
+    H265 = "h265"
+    H264 = "h264"
+
+
 @dataclass
 class AutoInstanceConfig:
     """Configuration for auto-generated instance.
@@ -57,8 +68,12 @@ class AutoInstanceConfig:
     gop_interval_seconds: float = 1.0
     
     # Video settings
+    output_codec: OutputCodec = OutputCodec.H265
     bitrate_kbps: int = 20000  # 20 Mbps default
     rc_mode: int = 1  # 0=VBR, 1=CBR, 2=FixQP (CBR default)
+    gop_pattern: int = 0  # Wave521 GOP preset
+    lossless_enable: bool = False
+    fixed_qp_value: int = 28
     
     # Audio settings
     audio_source: AudioSource = AudioSource.HDMI_RX
@@ -96,6 +111,7 @@ class AutoInstanceConfig:
         data = asdict(self)
         data["audio_source"] = self.audio_source.value
         data["capture_source"] = self.capture_source.value
+        data["output_codec"] = self.output_codec.value
         return data
     
     @classmethod
@@ -105,6 +121,8 @@ class AutoInstanceConfig:
             data["audio_source"] = AudioSource(data["audio_source"])
         if "capture_source" in data and isinstance(data["capture_source"], str):
             data["capture_source"] = CaptureSource(data["capture_source"])
+        if "output_codec" in data and isinstance(data["output_codec"], str):
+            data["output_codec"] = OutputCodec(data["output_codec"])
         # Filter out unknown fields
         valid_fields = cls.__dataclass_fields__.keys()
         filtered_data = {k: v for k, v in data.items() if k in valid_fields}
@@ -161,6 +179,8 @@ class PipelineBuilder:
         else:
             pipeline = self._build_v4l2_legacy_source(config, gop, use_hdr_pipeline)
         
+        codec_caps, codec_parser = self._build_codec_output(config)
+
         # Audio branch (same for all capture modes)
         pipeline += (
             f'alsasrc device={audio_device} buffer-time=500000 provide-clock=false '
@@ -191,6 +211,12 @@ class PipelineBuilder:
             )
         
         return pipeline
+
+    def _build_codec_output(self, config: AutoInstanceConfig) -> tuple[str, str]:
+        """Build output caps and parser for the selected codec."""
+        if config.output_codec == OutputCodec.H264:
+            return ("video/x-h264", "h264parse config-interval=-1")
+        return ("video/x-h265", "h265parse config-interval=-1")
     
     def _build_vfmcap_source(
         self, config: AutoInstanceConfig, gop: int, use_hdr: bool
@@ -200,17 +226,16 @@ class PipelineBuilder:
         Path A always outputs P010_10LE for HDR (Vulkan GPU conversion from
         raw vfm_cap formats).  For SDR, outputs NV12.
         """
+        codec_caps, codec_parser = self._build_codec_output(config)
         if use_hdr:
             # HDR 10-bit: P010_10LE via Vulkan conversion
             return (
                 f'streamboxsrc source=vfmcap output-format=p010 ! '
                 f'video/x-raw,format=P010_10LE,width={config.width},height={config.height},'
                 f'framerate={config.framerate}/1 ! '
-                f'amlvenc internal-bit-depth=10 '
-                f'gop={gop} gop-pattern=0 bitrate={config.bitrate_kbps} '
-                f'framerate={config.framerate} rc-mode={config.rc_mode} ! '
-                f'video/x-h265 ! '
-                f'h265parse config-interval=-1 ! '
+                f'{self._build_encoder_settings(config, gop, hdr=True)} ! '
+                f'{codec_caps} ! '
+                f'{codec_parser} ! '
                 f'queue max-size-buffers=30 max-size-time=0 max-size-bytes=0 ! '
                 f'mux. '
             )
@@ -221,10 +246,9 @@ class PipelineBuilder:
                 f'video/x-raw,format=NV12,width={config.width},height={config.height},'
                 f'framerate={config.framerate}/1 ! '
                 f'queue max-size-buffers=30 max-size-time=0 max-size-bytes=0 ! '
-                f'amlvenc gop={gop} gop-pattern=0 framerate={config.framerate} '
-                f'bitrate={config.bitrate_kbps} rc-mode={config.rc_mode} ! '
-                f'video/x-h265 ! '
-                f'h265parse config-interval=-1 ! '
+                f'{self._build_encoder_settings(config, gop, hdr=False)} ! '
+                f'{codec_caps} ! '
+                f'{codec_parser} ! '
                 f'queue max-size-buffers=30 max-size-time=0 max-size-bytes=0 ! '
                 f'mux. '
             )
@@ -237,17 +261,16 @@ class PipelineBuilder:
         Path B auto-detects signal depth.  For 8-bit SDR, outputs NV21
         passthrough.  For 10-bit HDR, Vulkan converts AMLY→P010.
         """
+        codec_caps, codec_parser = self._build_codec_output(config)
         if use_hdr:
             # HDR 10-bit: Vulkan AMLY→P010 conversion
             return (
                 f'streamboxsrc source=vdin1 output-format=p010 ! '
                 f'video/x-raw,format=P010_10LE,width={config.width},height={config.height},'
                 f'framerate={config.framerate}/1 ! '
-                f'amlvenc internal-bit-depth=10 '
-                f'gop={gop} gop-pattern=0 bitrate={config.bitrate_kbps} '
-                f'framerate={config.framerate} rc-mode={config.rc_mode} ! '
-                f'video/x-h265 ! '
-                f'h265parse config-interval=-1 ! '
+                f'{self._build_encoder_settings(config, gop, hdr=True)} ! '
+                f'{codec_caps} ! '
+                f'{codec_parser} ! '
                 f'queue max-size-buffers=30 max-size-time=0 max-size-bytes=0 ! '
                 f'mux. '
             )
@@ -258,10 +281,9 @@ class PipelineBuilder:
                 f'video/x-raw,format=NV21,width={config.width},height={config.height},'
                 f'framerate={config.framerate}/1 ! '
                 f'queue max-size-buffers=30 max-size-time=0 max-size-bytes=0 ! '
-                f'amlvenc gop={gop} gop-pattern=0 framerate={config.framerate} '
-                f'bitrate={config.bitrate_kbps} rc-mode={config.rc_mode} ! '
-                f'video/x-h265 ! '
-                f'h265parse config-interval=-1 ! '
+                f'{self._build_encoder_settings(config, gop, hdr=False)} ! '
+                f'{codec_caps} ! '
+                f'{codec_parser} ! '
                 f'queue max-size-buffers=30 max-size-time=0 max-size-bytes=0 ! '
                 f'mux. '
             )
@@ -274,6 +296,7 @@ class PipelineBuilder:
         Original v4l2 capture path.  Uses ENCODED format for HDR, NV21 for SDR.
         Kept for backward compatibility but deprecated in favor of streamboxsrc.
         """
+        codec_caps, codec_parser = self._build_codec_output(config)
         if use_hdr:
             # HDR 10-bit pipeline: ENCODED format + internal-bit-depth=10 + Vulkan backend
             return (
@@ -281,11 +304,9 @@ class PipelineBuilder:
                 f'video/x-raw,format=ENCODED,width={config.width},height={config.height},'
                 f'framerate={config.framerate}/1 ! '
                 f'videorate ! '
-                f'amlvenc internal-bit-depth=10 v10conv-backend=0 '
-                f'gop={gop} gop-pattern=0 bitrate={config.bitrate_kbps} '
-                f'framerate={config.framerate} rc-mode={config.rc_mode} ! '
-                f'video/x-h265 ! '
-                f'h265parse config-interval=-1 ! '
+                f'{self._build_encoder_settings(config, gop, hdr=True, legacy_v4l2=True)} ! '
+                f'{codec_caps} ! '
+                f'{codec_parser} ! '
                 f'queue max-size-buffers=30 max-size-time=0 max-size-bytes=0 ! '
                 f'mux. '
             )
@@ -296,13 +317,79 @@ class PipelineBuilder:
                 f'video/x-raw,format=NV21,width={config.width},height={config.height},'
                 f'framerate={config.framerate}/1 ! '
                 f'queue max-size-buffers=30 max-size-time=0 max-size-bytes=0 ! '
-                f'amlvenc gop={gop} gop-pattern=0 framerate={config.framerate} '
-                f'bitrate={config.bitrate_kbps} rc-mode={config.rc_mode} ! '
-                f'video/x-h265 ! '
-                f'h265parse config-interval=-1 ! '
+                f'{self._build_encoder_settings(config, gop, hdr=False)} ! '
+                f'{codec_caps} ! '
+                f'{codec_parser} ! '
                 f'queue max-size-buffers=30 max-size-time=0 max-size-bytes=0 ! '
                 f'mux. '
             )
+
+    def _build_encoder_settings(
+        self,
+        config: AutoInstanceConfig,
+        gop: int,
+        hdr: bool,
+        legacy_v4l2: bool = False,
+    ) -> str:
+        """Build amlvenc settings string for the selected encoder mode."""
+        lossless_enabled = config.lossless_enable and config.output_codec == OutputCodec.H265
+        settings = ["amlvenc"]
+        if hdr:
+            settings.append("internal-bit-depth=10")
+        if legacy_v4l2 and hdr:
+            settings.append("v10conv-backend=0")
+
+        settings.extend([
+            f"gop={gop}",
+            f"gop-pattern={config.gop_pattern}",
+            f"framerate={config.framerate}",
+        ])
+
+        if lossless_enabled:
+            settings.append("lossless-enable=true")
+        else:
+            settings.extend([
+                f"bitrate={config.bitrate_kbps}",
+                f"rc-mode={config.rc_mode}",
+            ])
+            if config.rc_mode == 2:
+                if self._supports_full_fixed_qp():
+                    settings.extend([
+                        f"qp-i={config.fixed_qp_value}",
+                        f"qp-p={config.fixed_qp_value}",
+                        f"qp-b={config.fixed_qp_value}",
+                    ])
+                else:
+                    settings.append(f"qp-b={config.fixed_qp_value}")
+
+        return " ".join(settings)
+
+    def _supports_full_fixed_qp(self) -> bool:
+        """Check whether the installed amlvenc plugin supports qp-i/qp-p."""
+        global _AMLVENC_QP_PROPERTY_CACHE
+        if _AMLVENC_QP_PROPERTY_CACHE is not None:
+            return _AMLVENC_QP_PROPERTY_CACHE
+
+        try:
+            result = subprocess.run(
+                ["gst-inspect-1.0", "amlvenc"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+            text = result.stdout + result.stderr
+            _AMLVENC_QP_PROPERTY_CACHE = "qp-i" in text and "qp-p" in text
+        except Exception as e:
+            logger.warning("Failed to inspect amlvenc capabilities: %s", e)
+            _AMLVENC_QP_PROPERTY_CACHE = False
+
+        if not _AMLVENC_QP_PROPERTY_CACHE:
+            logger.warning(
+                "Installed amlvenc does not expose qp-i/qp-p yet; Fix QP falls back to qp-b only"
+            )
+
+        return _AMLVENC_QP_PROPERTY_CACHE
     
     def build_preview(self, config: AutoInstanceConfig) -> str:
         """Build pipeline preview with line breaks for readability."""
@@ -326,8 +413,12 @@ class AutoInstanceManager:
     DEFAULT_CONFIG = AutoInstanceConfig(
         capture_source=CaptureSource.VFMCAP,  # Path A: raw/low-latency
         gop_interval_seconds=1.0,
+        output_codec=OutputCodec.H265,
         bitrate_kbps=20000,
         rc_mode=1,  # CBR
+        gop_pattern=0,
+        lossless_enable=False,
+        fixed_qp_value=28,
         audio_source=AudioSource.HDMI_RX,
         srt_port=8888,
         recording_enabled=False,
@@ -335,6 +426,8 @@ class AutoInstanceManager:
         use_hdr=True,  # Use HDR 10-bit when source is HDR
         autostart_on_ready=True  # Key: auto-start when HDMI ready
     )
+
+    DEFAULT_RECORDING_PATH = "/mnt/sdcard/recordings/"
     
     def __init__(self, instance_manager, event_manager=None):
         """Initialize auto instance manager.
@@ -428,6 +521,7 @@ class AutoInstanceManager:
         Returns:
             instance_id: The auto instance ID
         """
+        self._prepare_recording_path(config)
         self._apply_runtime_status_to_config(config, runtime_status)
         
         # Update HDR info from event manager's RX status
@@ -580,6 +674,10 @@ class AutoInstanceManager:
         if desired_config.use_hdr and not desired_config.source_is_hdr:
             logger.info("Auto-start: source is not HDR, falling back to SDR pipeline")
             desired_config.use_hdr = False
+
+        if desired_config.lossless_enable and desired_config.output_codec != OutputCodec.H265:
+            logger.warning("Lossless encoding requires H.265, disabling lossless for this pipeline")
+            desired_config.lossless_enable = False
 
         desired_pipeline = self._builder.build(desired_config)
 
@@ -874,10 +972,18 @@ class AutoInstanceManager:
             self.config.capture_source = CaptureSource(updates["capture_source"])
         if "gop_interval_seconds" in updates:
             self.config.gop_interval_seconds = float(updates["gop_interval_seconds"])
+        if "output_codec" in updates:
+            self.config.output_codec = OutputCodec(updates["output_codec"])
         if "bitrate_kbps" in updates:
             self.config.bitrate_kbps = int(updates["bitrate_kbps"])
         if "rc_mode" in updates:
             self.config.rc_mode = int(updates["rc_mode"])
+        if "gop_pattern" in updates:
+            self.config.gop_pattern = int(updates["gop_pattern"])
+        if "lossless_enable" in updates:
+            self.config.lossless_enable = bool(updates["lossless_enable"])
+        if "fixed_qp_value" in updates:
+            self.config.fixed_qp_value = int(updates["fixed_qp_value"])
         if "audio_source" in updates:
             self.config.audio_source = AudioSource(updates["audio_source"])
         if "srt_port" in updates:
@@ -886,6 +992,7 @@ class AutoInstanceManager:
             self.config.recording_enabled = bool(updates["recording_enabled"])
         if "recording_path" in updates:
             self.config.recording_path = updates["recording_path"]
+        self._prepare_recording_path(self.config)
         if "autostart_on_ready" in updates:
             self.config.autostart_on_ready = bool(updates["autostart_on_ready"])
         if "use_hdr" in updates:
@@ -907,6 +1014,25 @@ class AutoInstanceManager:
         
         await self.save()
         return True
+
+    def _prepare_recording_path(self, config: AutoInstanceConfig) -> None:
+        """Normalize recording path and create parent directory when needed."""
+        normalized = (config.recording_path or "").strip() or self.DEFAULT_RECORDING_PATH
+        path = Path(normalized).expanduser()
+
+        if normalized.endswith("/") or path.suffix == "":
+            timestamp = time.strftime("%Y%m%d-%H%M%S", time.localtime())
+            path = path / f"capture-{timestamp}.ts"
+
+        config.recording_path = str(path)
+
+        if not config.recording_enabled:
+            return
+
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            logger.warning("Failed to prepare recording directory %s: %s", path.parent, e)
     
     async def delete(self) -> bool:
         """Delete the auto instance and config.

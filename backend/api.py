@@ -510,8 +510,12 @@ if DBUS_LIBRARY == "dbus_next":
                 config_json: JSON with config fields:
                     - capture_source: str ("vfmcap", "vdin1", "v4l2_legacy")
                     - gop_interval_seconds: float
+                    - output_codec: str ("h265" or "h264")
                     - bitrate_kbps: int
                     - rc_mode: int (0=VBR, 1=CBR, 2=FixQP)
+                    - gop_pattern: int (0..8 Wave521 preset)
+                    - lossless_enable: bool
+                    - fixed_qp_value: int
                     - audio_source: str ("hdmi_rx" or "line_in")
                     - srt_port: int
                     - recording_enabled: bool
@@ -530,7 +534,7 @@ if DBUS_LIBRARY == "dbus_next":
                 if not self.auto_instance_manager:
                     return False
                 
-                from auto_instance import AutoInstanceConfig, AudioSource, CaptureSource
+                from auto_instance import AutoInstanceConfig, AudioSource, CaptureSource, OutputCodec
                 
                 config_data = json.loads(config_json)
                 
@@ -538,8 +542,12 @@ if DBUS_LIBRARY == "dbus_next":
                 config = AutoInstanceConfig(
                     capture_source=CaptureSource(config_data.get("capture_source", "vfmcap")),
                     gop_interval_seconds=config_data.get("gop_interval_seconds", 1.0),
+                    output_codec=OutputCodec(config_data.get("output_codec", "h265")),
                     bitrate_kbps=config_data.get("bitrate_kbps", 20000),
                     rc_mode=config_data.get("rc_mode", 1),
+                    gop_pattern=config_data.get("gop_pattern", 0),
+                    lossless_enable=config_data.get("lossless_enable", False),
+                    fixed_qp_value=config_data.get("fixed_qp_value", 28),
                     audio_source=AudioSource(config_data.get("audio_source", "hdmi_rx")),
                     srt_port=config_data.get("srt_port", 8888),
                     recording_enabled=config_data.get("recording_enabled", False),
@@ -587,14 +595,18 @@ if DBUS_LIBRARY == "dbus_next":
                 Pipeline string with line breaks
             """
             try:
-                from auto_instance import AutoInstanceConfig, PipelineBuilder, AudioSource, CaptureSource
+                from auto_instance import AutoInstanceConfig, PipelineBuilder, AudioSource, CaptureSource, OutputCodec
                 
                 config_data = json.loads(config_json)
                 config = AutoInstanceConfig(
                     capture_source=CaptureSource(config_data.get("capture_source", "vfmcap")),
                     gop_interval_seconds=config_data.get("gop_interval_seconds", 1.0),
+                    output_codec=OutputCodec(config_data.get("output_codec", "h265")),
                     bitrate_kbps=config_data.get("bitrate_kbps", 20000),
                     rc_mode=config_data.get("rc_mode", 1),
+                    gop_pattern=config_data.get("gop_pattern", 0),
+                    lossless_enable=config_data.get("lossless_enable", False),
+                    fixed_qp_value=config_data.get("fixed_qp_value", 28),
                     audio_source=AudioSource(config_data.get("audio_source", "hdmi_rx")),
                     srt_port=config_data.get("srt_port", 8888),
                     recording_enabled=config_data.get("recording_enabled", False),

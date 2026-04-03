@@ -329,17 +329,22 @@ function updateDetailView() {
         const rows = [
             ['Type', 'Auto-Generated'],
             ['Capture Source', formatCaptureSource(cfg.capture_source)],
-            ['Encoder', 'H.265 (amlvenc)'],
-            ['Bitrate', `${(cfg.bitrate_kbps / 1000).toFixed(1)} Mbps`],
+            ['Encoder', formatOutputCodec(cfg.output_codec)],
+            ['Bitrate', cfg.lossless_enable ? 'Lossless mode' : `${(cfg.bitrate_kbps / 1000).toFixed(1)} Mbps`],
             ['GOP Interval', `${cfg.gop_interval_seconds}s`],
+            ['GOP Preset', formatGopPreset(cfg.gop_pattern)],
             ['RC Mode', cfg.rc_mode === 1 ? 'CBR' : cfg.rc_mode === 0 ? 'VBR' : 'FixQP'],
+            ['Lossless', cfg.lossless_enable ? 'Enabled (720p60 or lower)' : 'Disabled'],
             ['Audio', cfg.audio_source === 'hdmi_rx' ? 'HDMI RX' : 'Line In'],
             ['SRT Port', `${cfg.srt_port}`],
-            ['Debounce', `${cfg.signal_debounce_seconds ?? 2.0}s`],
-            ['Restart Retries', `${cfg.max_restart_retries ?? 5}`]
+            ['Debounce', `${cfg.signal_debounce_seconds != null ? cfg.signal_debounce_seconds : 2.0}s`],
+            ['Restart Retries', `${cfg.max_restart_retries != null ? cfg.max_restart_retries : 5}`]
         ];
         if (cfg.recording_enabled) {
             rows.push(['Recording', cfg.recording_path]);
+        }
+        if (cfg.rc_mode === 2) {
+            rows.push(['Fixed QP', `${cfg.fixed_qp_value != null ? cfg.fixed_qp_value : 28}`]);
         }
         document.getElementById("detail-pipeline").innerHTML = renderInstanceSummary(rows, inst.pipeline);
     } else if (inst.instance_type === 'uvc' && inst.uvc_config) {
@@ -631,6 +636,25 @@ function formatCaptureSource(source) {
         v4l2_legacy: 'Legacy RX'
     };
     return labels[source] || source || '-';
+}
+
+function formatGopPreset(pattern) {
+    const labels = {
+        0: 'IPP',
+        1: 'IBBBP',
+        2: 'IBPBP',
+        3: 'IBBB',
+        4: 'ALL_I',
+        5: 'IPPPP',
+        6: 'IBBBB',
+        7: 'RA_IB',
+        8: 'IPP_SINGLE'
+    };
+    return labels[pattern] || `${pattern}`;
+}
+
+function formatOutputCodec(codec) {
+    return codec === 'h264' ? 'H.264 / AVC (amlvenc)' : 'H.265 / HEVC (amlvenc)';
 }
 
 function onHdmiSignalChanged(available, resolution) {

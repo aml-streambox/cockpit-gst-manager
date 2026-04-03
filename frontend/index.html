@@ -155,6 +155,13 @@
                             
                             <div class="gst-form-row">
                                 <div class="gst-form-group">
+                                    <label for="auto-output-codec">Output Codec</label>
+                                    <select id="auto-output-codec" class="gst-select">
+                                        <option value="h265" selected>H.265 / HEVC</option>
+                                        <option value="h264">H.264 / AVC</option>
+                                    </select>
+                                </div>
+                                <div class="gst-form-group">
                                     <label for="auto-gop-interval">GOP Interval (seconds)</label>
                                     <input type="number" id="auto-gop-interval" class="gst-input" 
                                            value="1.0" min="0.5" max="10" step="0.5">
@@ -175,6 +182,35 @@
                                         <option value="2">Fix QP</option>
                                     </select>
                                 </div>
+                                <div class="gst-form-group">
+                                    <label for="auto-gop-pattern">GOP Preset</label>
+                                    <select id="auto-gop-pattern" class="gst-select">
+                                        <option value="0" selected>IPP</option>
+                                        <option value="1">IBBBP</option>
+                                        <option value="2">IBPBP</option>
+                                        <option value="3">IBBB</option>
+                                        <option value="4">ALL_I</option>
+                                        <option value="5">IPPPP</option>
+                                        <option value="6">IBBBB</option>
+                                        <option value="7">RA_IB</option>
+                                        <option value="8">IPP_SINGLE</option>
+                                    </select>
+                                </div>
+                            </div>
+
+                            <label class="gst-toggle-label">
+                                <input type="checkbox" id="auto-lossless-enable">
+                                <span class="gst-toggle-slider"></span>
+                                Enable HEVC lossless coding
+                            </label>
+                            <span class="gst-hint" id="auto-lossless-hint">
+                                Lossless mode is HEVC-only and is intended for archival-quality capture at 720p60 or lower.
+                            </span>
+                            <div id="auto-fixed-qp-group" class="gst-form-group" style="display: none;">
+                                <label for="auto-fixed-qp-value">Fixed QP Value</label>
+                                <input type="number" id="auto-fixed-qp-value" class="gst-input"
+                                       value="28" min="0" max="51" step="1">
+                                <span class="gst-hint">Used only when RC Mode is Fix QP. On updated `amlvenc`, the same QP value is applied to I, P, and B frames.</span>
                             </div>
 
                             <h3>Recovery Settings</h3>
@@ -234,6 +270,7 @@
                                 <label for="auto-recording-path">Recording Path</label>
                                 <input type="text" id="auto-recording-path" class="gst-input" 
                                        placeholder="/mnt/sdcard/recordings/capture.ts">
+                                <span class="gst-hint">You can enter a full filename or a directory. Directories create timestamped files like `capture-20260403-173000.ts`.</span>
                             </div>
                             
                             <h3>Auto-Start</h3>

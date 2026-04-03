@@ -23,8 +23,12 @@ class AutoConfigurator {
         return {
             capture_source: 'vfmcap',
             gop_interval_seconds: 1.0,
+            output_codec: 'h265',
             bitrate_kbps: 20000,
             rc_mode: 1,  // CBR
+            gop_pattern: 0,
+            lossless_enable: false,
+            fixed_qp_value: 28,
             audio_source: 'hdmi_rx',
             srt_port: 8888,
             recording_enabled: false,
@@ -59,7 +63,8 @@ class AutoConfigurator {
     setupEventListeners() {
         // Form field changes - auto-preview
         const inputs = [
-            'auto-capture-source', 'auto-gop-interval', 'auto-bitrate', 'auto-rc-mode',
+            'auto-capture-source', 'auto-gop-interval', 'auto-output-codec', 'auto-bitrate', 'auto-rc-mode',
+            'auto-gop-pattern', 'auto-lossless-enable', 'auto-fixed-qp-value',
             'auto-audio-source', 'auto-srt-port',
             'auto-recording-enabled', 'auto-recording-path', 'auto-autostart',
             'auto-use-hdr', 'auto-signal-debounce', 'auto-max-restart-retries',
@@ -301,15 +306,17 @@ class AutoConfigurator {
 
         setValue('auto-capture-source', this.config.capture_source || 'vfmcap');
         setValue('auto-gop-interval', this.config.gop_interval_seconds);
+        setValue('auto-output-codec', this.config.output_codec || 'h265');
         setValue('auto-bitrate', this.config.bitrate_kbps);
         setValue('auto-rc-mode', this.config.rc_mode);
+        setValue('auto-gop-pattern', this.config.gop_pattern != null ? this.config.gop_pattern : 0);
         setValue('auto-audio-source', this.config.audio_source);
         setValue('auto-srt-port', this.config.srt_port);
         setValue('auto-recording-path', this.config.recording_path);
-        setValue('auto-signal-debounce', this.config.signal_debounce_seconds ?? 2.0);
-        setValue('auto-max-restart-retries', this.config.max_restart_retries ?? 5);
-        setValue('auto-restart-backoff-base', this.config.restart_backoff_base ?? 1.0);
-        setValue('auto-restart-backoff-max', this.config.restart_backoff_max ?? 30.0);
+        setValue('auto-signal-debounce', this.config.signal_debounce_seconds != null ? this.config.signal_debounce_seconds : 2.0);
+        setValue('auto-max-restart-retries', this.config.max_restart_retries != null ? this.config.max_restart_retries : 5);
+        setValue('auto-restart-backoff-base', this.config.restart_backoff_base != null ? this.config.restart_backoff_base : 1.0);
+        setValue('auto-restart-backoff-max', this.config.restart_backoff_max != null ? this.config.restart_backoff_max : 30.0);
 
         const recEnable = document.getElementById('auto-recording-enabled');
         if (recEnable) {
@@ -325,6 +332,12 @@ class AutoConfigurator {
         if (useHdr) {
             useHdr.checked = this.config.use_hdr !== false; // default true
         }
+
+        const losslessEnable = document.getElementById('auto-lossless-enable');
+        if (losslessEnable) {
+            losslessEnable.checked = this.config.lossless_enable === true;
+        }
+        setValue('auto-fixed-qp-value', this.config.fixed_qp_value != null ? this.config.fixed_qp_value : 28);
 
         const pathGroup = document.getElementById('auto-recording-path-group');
         if (pathGroup) {
@@ -365,8 +378,12 @@ class AutoConfigurator {
         return {
             capture_source: getValue('auto-capture-source', 'vfmcap'),
             gop_interval_seconds: parseFloat(getValue('auto-gop-interval', '1.0')),
+            output_codec: getValue('auto-output-codec', 'h265'),
             bitrate_kbps: parseInt(getValue('auto-bitrate', '20000')),
             rc_mode: parseInt(getValue('auto-rc-mode', '1')),
+            gop_pattern: parseInt(getValue('auto-gop-pattern', '0')),
+            lossless_enable: getChecked('auto-lossless-enable'),
+            fixed_qp_value: parseInt(getValue('auto-fixed-qp-value', '28')),
             audio_source: getValue('auto-audio-source', 'hdmi_rx'),
             srt_port: parseInt(getValue('auto-srt-port', '8888')),
             recording_enabled: getChecked('auto-recording-enabled'),
@@ -561,9 +578,21 @@ class AutoConfigurator {
         const hdrStatusEl = document.getElementById('auto-hdr-status');
         const detectedHdrEl = document.getElementById('auto-detected-hdr');
         const useHdrChecked = document.getElementById('auto-use-hdr');
+        const losslessChecked = document.getElementById('auto-lossless-enable');
+        const losslessHintEl = document.getElementById('auto-lossless-hint');
+        const codecSelect = document.getElementById('auto-output-codec');
+        const rcModeSelect = document.getElementById('auto-rc-mode');
+        const fixedQpGroup = document.getElementById('auto-fixed-qp-group');
         const hdrEnabled = useHdrChecked ? useHdrChecked.checked : true;
+        const losslessEnabled = losslessChecked ? losslessChecked.checked : false;
+        const outputCodec = codecSelect ? codecSelect.value : 'h265';
+        const rcMode = rcModeSelect ? rcModeSelect.value : '1';
         const sourceIsHdr = passthrough.source_is_hdr || (hdmi.hdr_info > 0) || ((hdmi.color_depth || passthrough.color_depth || 0) >= 10);
         const colorDepth = hdmi.color_depth || passthrough.color_depth || 8;
+
+        if (fixedQpGroup) {
+            fixedQpGroup.style.display = rcMode === '2' ? 'block' : 'none';
+        }
         
         // Pipeline mode label depends on capture source
         const pipelineLabel = {
@@ -601,6 +630,12 @@ class AutoConfigurator {
             if (!rxReady) {
                 hdrStatusEl.textContent = 'Source: No signal';
                 hdrStatusEl.className = 'gst-hdr-status';
+            } else if (losslessEnabled && outputCodec !== 'h265') {
+                hdrStatusEl.textContent = 'Lossless requires H.265. Current selection will fall back to normal encoding.';
+                hdrStatusEl.className = 'gst-hdr-status hdr-disabled';
+            } else if (losslessEnabled) {
+                hdrStatusEl.textContent = 'Lossless HEVC enabled - recommended only for 720p60 or lower';
+                hdrStatusEl.className = 'gst-hdr-status hdr-disabled';
             } else if (sourceIsHdr && hdrEnabled) {
                 hdrStatusEl.textContent = `HDR ${colorDepth}-bit pipeline active (${pipelineLabel})`;
                 hdrStatusEl.className = 'gst-hdr-status hdr-enabled';
@@ -614,6 +649,14 @@ class AutoConfigurator {
                 hdrStatusEl.textContent = `SDR ${colorDepth}-bit source - using standard pipeline`;
                 hdrStatusEl.className = 'gst-hdr-status';
             }
+        }
+
+        if (losslessHintEl) {
+            losslessHintEl.textContent = losslessEnabled && outputCodec !== 'h265'
+                ? 'Lossless mode only works with H.265. Switch codec back to H.265 to use it.'
+                : losslessEnabled
+                ? 'Lossless mode is enabled. Use it only for 720p60 or lower because bitrate and encoder load rise sharply.'
+                : 'Lossless mode is HEVC-only and is intended for archival-quality capture at 720p60 or lower.';
         }
     }
 }
