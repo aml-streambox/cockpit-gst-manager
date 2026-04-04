@@ -189,11 +189,19 @@ class HdmiMonitor:
     The polling loop supports *interrupt-style* waking: external code
     (e.g. a native tvserver event callback) can call :meth:`interrupt` to
     force an immediate re-poll without waiting for the full interval.
+    
+    Signal stabilization: when signal changes, we verify stability by
+    checking 3 times with 2-second intervals. Only after 3 consecutive
+    identical readings do we consider the signal stable.
     """
 
     POLL_NO_SIGNAL = 2.0
     POLL_SIGNAL_ACTIVE = 5.0
     POLL_STABILITY_CHECK = 0.5
+    
+    # Signal stabilization: require N consecutive identical readings
+    STABILITY_CHECK_COUNT = 3
+    STABILITY_CHECK_INTERVAL = 2.0
 
     def __init__(
         self,
@@ -511,16 +519,96 @@ class HdmiMonitor:
             new_status.fps != self.last_status.fps or
             new_status.hdr_info != self.last_status.hdr_info
         )
+    
+    def _is_same_resolution(self, s1: HdmiStatus, s2: HdmiStatus) -> bool:
+        """Check if two status readings have the same resolution/framerate/HDR."""
+        if s1 is None or s2 is None:
+            return False
+        return (
+            s1.width == s2.width and
+            s1.height == s2.height and
+            s1.fps == s2.fps and
+            s1.hdr_info == s2.hdr_info and
+            s1.signal_locked == s2.signal_locked
+        )
+    
+    async def _verify_signal_stable(self, initial_status: HdmiStatus) -> Optional[HdmiStatus]:
+        """Verify signal is stable by checking multiple times.
+        
+        Requires STABILITY_CHECK_COUNT consecutive identical readings
+        at STABILITY_CHECK_INTERVAL intervals.
+        
+        Args:
+            initial_status: The first status reading when change was detected.
+            
+        Returns:
+            The stable status if verified, None if signal is still fluctuating.
+        """
+        stable_count = 1  # Already have first reading
+        checks = [initial_status]
+        
+        logger.info(f"Verifying signal stability: {initial_status.resolution}")
+        
+        while stable_count < self.STABILITY_CHECK_COUNT:
+            await asyncio.sleep(self.STABILITY_CHECK_INTERVAL)
+            
+            status = self.get_status()
+            checks.append(status)
+            
+            if self._is_same_resolution(checks[-2], status):
+                stable_count += 1
+                logger.info(
+                    f"Signal stability check {stable_count}/{self.STABILITY_CHECK_COUNT}: "
+                    f"{status.resolution} HDR={status.hdr_info} locked={status.signal_locked}"
+                )
+            else:
+                # Signal changed - reset and restart
+                logger.info(
+                    f"Signal fluctuated: {checks[-2].resolution} -> {status.resolution}, "
+                    f"resetting stability counter"
+                )
+                stable_count = 1
+                checks = [status]
+        
+        logger.info(f"Signal stable after {stable_count} consecutive identical readings")
+        return checks[-1]
 
     async def _handle_status_change(self, status: HdmiStatus) -> None:
         """Handle a status change event."""
         was_locked = self.last_status.signal_locked if self.last_status else False
-        now_locked = status.signal_locked
+        was_resolution = (
+            f"{self.last_status.width}x{self.last_status.height}@{self.last_status.fps}"
+            if self.last_status else "none"
+        )
+        now_resolution = f"{status.width}x{status.height}@{status.fps}"
 
         logger.info(
-            f"HDMI status changed: locked={now_locked}, "
+            f"HDMI status changed: locked={status.signal_locked}, "
             f"resolution={status.resolution}"
         )
+
+        # Signal became available or resolution changed - verify stability
+        if status.signal_locked:
+            if not was_locked:
+                # Signal newly locked - verify stability
+                logger.info(f"Signal newly locked, verifying stability")
+                stable_status = await self._verify_signal_stable(status)
+            elif self.last_status and (
+                self.last_status.width != status.width or
+                self.last_status.height != status.height or
+                self.last_status.fps != status.fps
+            ):
+                # Resolution changed - verify stability
+                logger.info(f"Resolution changed: {was_resolution} -> {now_resolution}, verifying stability")
+                stable_status = await self._verify_signal_stable(status)
+            else:
+                stable_status = status
+            
+            if stable_status is None:
+                logger.warning("Signal verification failed - still fluctuating")
+                return
+            status = stable_status
+            logger.info(f"Signal verified stable: {status.resolution}")
 
         # General status change callback
         if self.on_status_change:
@@ -532,7 +620,7 @@ class HdmiMonitor:
                 logger.error(f"Status change callback error: {e}")
 
         # Signal became available
-        if now_locked and not was_locked:
+        if status.signal_locked and not was_locked:
             if self.on_signal_ready:
                 try:
                     result = self.on_signal_ready(status)
@@ -542,7 +630,7 @@ class HdmiMonitor:
                     logger.error(f"Signal ready callback error: {e}")
 
         # Signal was lost
-        elif was_locked and not now_locked:
+        elif was_locked and not status.signal_locked:
             if self.on_signal_lost:
                 try:
                     result = self.on_signal_lost()
@@ -667,56 +755,95 @@ class EventManager:
             logger.warning(f"Failed to set up native event bridge: {e}")
     
     async def _check_initial_state(self) -> None:
-        """Check if HDMI is already stable on startup."""
+        """Check if HDMI is already stable on startup.
+        
+        Uses stability verification: requires 3 consecutive identical readings
+        before considering the signal stable.
+        """
         try:
-            # Poll for RX status up to 10 seconds (HDMI might take time to stabilize)
-            for attempt in range(10):
-                await asyncio.sleep(1)
+            # Poll for RX status with stability verification
+            stable_readings = []
+            for attempt in range(30):  # Up to 30 attempts (60 seconds max)
+                await asyncio.sleep(2)  # 2 second interval between checks
                 
                 if not self.hdmi_monitor:
                     continue
-                    
+                
                 rx_status = self.hdmi_monitor.get_status()
+                resolution = f"{rx_status.width}x{rx_status.height}@{rx_status.fps}"
                 logger.info(f"Initial check attempt {attempt+1}: locked={rx_status.signal_locked}, "
-                           f"w={rx_status.width}, h={rx_status.height}, source={rx_status.source}")
+                           f"resolution={resolution}, hdr={rx_status.hdr_info}, source={rx_status.source}")
                 
-                # Store the status
-                self.last_hdmi_status = rx_status
+                # Check if signal is locked and has valid resolution
+                if not rx_status.signal_locked or rx_status.width == 0 or rx_status.height == 0:
+                    stable_readings = []  # Reset - no signal
+                    continue
                 
-                # If RX is stable (signal_locked and has resolution), we're done
-                if rx_status.signal_locked and rx_status.width > 0 and rx_status.height > 0:
-                    logger.info("HDMI RX is stable, checking TX status")
-                    self._rx_stable_time = time.time()
-                    if self.auto_instance_manager:
-                        await self.auto_instance_manager.on_hdmi_signal_ready(rx_status)
-                    await self._check_tx_status()
-                    return
+                # Check if this reading matches previous
+                if stable_readings and self.hdmi_monitor._is_same_resolution(stable_readings[-1], rx_status):
+                    stable_readings.append(rx_status)
+                    logger.info(f"Signal stability check {len(stable_readings)}/{self.hdmi_monitor.STABILITY_CHECK_COUNT}: "
+                               f"{resolution} HDR={rx_status.hdr_info}")
+                    
+                    if len(stable_readings) >= self.hdmi_monitor.STABILITY_CHECK_COUNT:
+                        # Signal is stable
+                        stable_status = stable_readings[-1]
+                        logger.info(f"Signal verified stable: {stable_status.resolution}")
+                        self.last_hdmi_status = stable_status
+                        self._rx_stable_time = time.time()
+                        
+                        # Trigger auto instance
+                        if self.auto_instance_manager:
+                            await self.auto_instance_manager.on_hdmi_signal_ready(stable_status)
+                        await self._check_tx_status()
+                        return
+                else:
+                    # Reading changed - reset counter
+                    stable_readings = [rx_status]
+                    if attempt > 0:
+                        logger.info(f"Resolution changed or first reading, resetting stability counter")
             
-            # If we get here, RX never became stable in 10 seconds
-            logger.info("HDMI RX did not stabilize in 10 seconds, starting periodic polling")
+            # If we get here, RX never became stable
+            logger.info("HDMI RX did not stabilize after 30 attempts, starting periodic polling")
             self._periodic_poll_task = asyncio.create_task(self._periodic_polling())
             
         except Exception as e:
             logger.warning(f"Failed to check initial HDMI state: {e}", exc_info=True)
     
     async def _periodic_polling(self) -> None:
-        """Poll HDMI state periodically until stable."""
+        """Poll HDMI state periodically with stability verification."""
+        stable_readings = []
         while self._rx_stable_time is None:
             try:
-                await asyncio.sleep(3)  # Check every 3 seconds
+                await asyncio.sleep(2)  # 2 second interval
                 
-                if self.hdmi_monitor:
-                    rx_status = self.hdmi_monitor.get_status()
-                    if rx_status.signal_locked and rx_status.width > 0 and rx_status.height > 0:
-                        logger.info(f"HDMI RX became stable: {rx_status.resolution}")
+                if not self.hdmi_monitor:
+                    continue
+                
+                rx_status = self.hdmi_monitor.get_status()
+                
+                if not rx_status.signal_locked or rx_status.width == 0 or rx_status.height == 0:
+                    stable_readings = []  # Reset - no signal
+                    continue
+                
+                # Check if this reading matches previous
+                if stable_readings and self.hdmi_monitor._is_same_resolution(stable_readings[-1], rx_status):
+                    stable_readings.append(rx_status)
+                    if len(stable_readings) >= self.hdmi_monitor.STABILITY_CHECK_COUNT:
+                        stable_status = stable_readings[-1]
+                        logger.info(f"HDMI RX became stable: {stable_status.resolution}")
                         self._rx_stable_time = time.time()
-                        self.last_hdmi_status = rx_status
+                        self.last_hdmi_status = stable_status
                         if self.auto_instance_manager:
-                            await self.auto_instance_manager.on_hdmi_signal_ready(rx_status)
+                            await self.auto_instance_manager.on_hdmi_signal_ready(stable_status)
                         # Wait 1.5s then check TX
                         await asyncio.sleep(1.5)
                         await self._check_tx_status()
                         break
+                else:
+                    # Reading changed - reset counter
+                    stable_readings = [rx_status]
+                    
             except asyncio.CancelledError:
                 break
             except Exception as e:
