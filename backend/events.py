@@ -558,13 +558,16 @@ class EventManager:
     Monitors both HDMI RX (input) and TX (output) for passthrough detection.
     When RX is stable, waits 1.5 seconds for TX stabilization, then checks
     TX status via sysfs.
+    
+    Also monitors UVC device hot-plug events.
     """
 
     def __init__(
         self,
         instance_manager,
         service=None,
-        auto_instance_manager=None
+        auto_instance_manager=None,
+        uvc_instance_manager=None
     ):
         """Initialize event manager.
 
@@ -572,10 +575,12 @@ class EventManager:
             instance_manager: InstanceManager for triggering actions.
             service: D-Bus service for signal emission.
             auto_instance_manager: AutoInstanceManager for auto instance control.
+            uvc_instance_manager: UVCInstanceManager for UVC device control.
         """
         self.instance_manager = instance_manager
         self.service = service
         self.auto_instance_manager = auto_instance_manager
+        self.uvc_instance_manager = uvc_instance_manager
         self.hdmi_monitor: Optional[HdmiMonitor] = None
         self.last_hdmi_status: Optional[HdmiStatus] = None
         
@@ -585,6 +590,10 @@ class EventManager:
         self._tx_check_task: Optional[asyncio.Task] = None
         self._periodic_poll_task: Optional[asyncio.Task] = None
         self._last_passthrough_state: Optional[Dict[str, Any]] = None
+        
+        # UVC device monitoring
+        self._uvc_monitor_task: Optional[asyncio.Task] = None
+        self._last_uvc_devices: List[Any] = []
 
     async def start(self) -> None:
         """Start all event monitors."""
@@ -604,6 +613,9 @@ class EventManager:
         # Check initial state - HDMI might already be stable
         # This handles the case where gst-manager starts after HDMI is already settled
         await self._check_initial_state()
+        
+        # Start UVC device monitoring
+        self._uvc_monitor_task = asyncio.create_task(self._uvc_monitor_loop())
     
     def _setup_native_event_bridge(self) -> None:
         """Bridge native tvserver events to the HdmiMonitor poll loop.
@@ -724,6 +736,12 @@ class EventManager:
             self._periodic_poll_task.cancel()
             try:
                 await self._periodic_poll_task
+            except asyncio.CancelledError:
+                pass
+        if self._uvc_monitor_task:
+            self._uvc_monitor_task.cancel()
+            try:
+                await self._uvc_monitor_task
             except asyncio.CancelledError:
                 pass
 
@@ -938,3 +956,47 @@ class EventManager:
                     await self.instance_manager.stop_instance(instance.id)
                 except Exception as e:
                     logger.error(f"Failed to stop {instance.id}: {e}")
+
+    async def _uvc_monitor_loop(self) -> None:
+        """Monitor UVC device hot-plug events.
+        
+        Polls for UVC device changes every 2 seconds and notifies
+        the UVCInstanceManager of device connect/disconnect events.
+        """
+        from uvc_utils import UVCDiscovery
+        
+        poll_interval = 2.0
+        
+        while True:
+            try:
+                await asyncio.sleep(poll_interval)
+                
+                if not self.uvc_instance_manager:
+                    continue
+                
+                # Discover current UVC devices
+                discovery = UVCDiscovery()
+                devices = await discovery.discover()
+                
+                # Check for changes
+                devices_changed = False
+                
+                if len(self._last_uvc_devices) != len(devices):
+                    devices_changed = True
+                else:
+                    # Check serial numbers
+                    last_serials = {d.serial for d in self._last_uvc_devices if d.serial}
+                    current_serials = {d.serial for d in devices if d.serial}
+                    if last_serials != current_serials:
+                        devices_changed = True
+                
+                if devices_changed:
+                    logger.debug(f"UVC devices changed: {len(devices)} devices")
+                    self._last_uvc_devices = list(devices)
+                    await self.uvc_instance_manager.on_devices_changed(devices)
+                
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"UVC monitor error: {e}")
+                await asyncio.sleep(5.0)

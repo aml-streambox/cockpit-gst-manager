@@ -80,6 +80,7 @@ class UVCDevice:
     driver: str
     is_uvc: bool
     formats: List[VideoFormat]
+    serial: Optional[str] = None
     current_format: Optional[str] = None
     current_resolution: Optional[Tuple[int, int]] = None
     current_fps: Optional[int] = None
@@ -91,6 +92,7 @@ class UVCDevice:
             "bus_info": self.bus_info,
             "driver": self.driver,
             "is_uvc": self.is_uvc,
+            "serial": self.serial,
             "is_h264_passthrough": self.is_h264_passthrough,
             "is_mjpeg": self.is_mjpeg,
             "is_yuyv": self.is_yuyv,
@@ -121,6 +123,52 @@ class UVCDiscovery:
     
     def __init__(self):
         self.devices: List[UVCDevice] = []
+    
+    def _get_usb_serial(self, device_path: str) -> Optional[str]:
+        """Extract USB serial number from sysfs.
+        
+        USB video devices have serial numbers accessible via sysfs.
+        The path structure is typically:
+        /sys/class/video4linux/videoX/device/../.. for USB devices
+        
+        Args:
+            device_path: Device path like /dev/video0
+            
+        Returns:
+            Serial number string or None if not found
+        """
+        try:
+            device_name = os.path.basename(device_path)
+            video_sysfs = f"/sys/class/video4linux/{device_name}"
+            
+            if not os.path.exists(video_sysfs):
+                return None
+            
+            device_link = os.path.join(video_sysfs, "device")
+            if not os.path.exists(device_link):
+                return None
+            
+            real_device_path = os.path.realpath(device_link)
+            
+            serial_paths = [
+                os.path.join(real_device_path, "serial"),
+                os.path.join(real_device_path, "..", "serial"),
+                os.path.join(real_device_path, "..", "..", "serial"),
+            ]
+            
+            for serial_path in serial_paths:
+                resolved = os.path.realpath(serial_path)
+                if os.path.exists(resolved):
+                    with open(resolved, 'r') as f:
+                        serial = f.read().strip()
+                        if serial and serial != "(null)" and serial != "(error)":
+                            return serial
+            
+            return None
+            
+        except Exception as e:
+            logger.debug(f"Failed to get USB serial for {device_path}: {e}")
+            return None
     
     async def discover(self) -> List[UVCDevice]:
         """Discover all UVC devices on the system.
@@ -197,13 +245,17 @@ class UVCDiscovery:
                 logger.debug(f"{device_path} has no usable capture formats")
                 return None
             
+            # Get USB serial number for persistent device identification
+            serial = self._get_usb_serial(device_path)
+            
             device = UVCDevice(
                 device_path=device_path,
                 name=cap.get("card", "Unknown"),
                 bus_info=bus_info,
                 driver=cap.get("driver", "unknown"),
                 is_uvc=is_uvc,
-                formats=formats
+                formats=formats,
+                serial=serial
             )
             
             return device
@@ -415,6 +467,34 @@ class UVCDiscovery:
     def get_devices_list(self) -> List[Dict]:
         """Get all discovered devices as list of dicts."""
         return [d.to_dict() for d in self.devices]
+    
+    def find_device_by_serial(self, serial: str) -> Optional[UVCDevice]:
+        """Find a device by its USB serial number.
+        
+        Args:
+            serial: USB serial number to search for
+            
+        Returns:
+            UVCDevice if found, None otherwise
+        """
+        for device in self.devices:
+            if device.serial == serial:
+                return device
+        return None
+    
+    def find_device_by_path(self, device_path: str) -> Optional[UVCDevice]:
+        """Find a device by its device path.
+        
+        Args:
+            device_path: Device path like /dev/video0
+            
+        Returns:
+            UVCDevice if found, None otherwise
+        """
+        for device in self.devices:
+            if device.device_path == device_path:
+                return device
+        return None
 
 
 class UVCPipelineBuilder:
@@ -752,6 +832,7 @@ def get_pipeline_for_device(
         bus_info=device_dict["bus_info"],
         driver=device_dict["driver"],
         is_uvc=device_dict["is_uvc"],
+        serial=device_dict.get("serial"),
         formats=[
             VideoFormat(
                 pixelformat=f["pixelformat"],

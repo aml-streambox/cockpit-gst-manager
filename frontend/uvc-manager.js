@@ -13,6 +13,8 @@ const UVCManager = {
     editingInstanceId: null,
     editingInstanceName: '',
     editingDevicePath: '',
+    editingDeviceSerial: null,
+    autostart: false,
     currentConfig: {
         format: 'auto',
         width: 1920,
@@ -84,6 +86,8 @@ const UVCManager = {
             this.editingInstanceId = null;
             this.editingInstanceName = '';
             this.editingDevicePath = '';
+            this.editingDeviceSerial = null;
+            this.autostart = false;
             this.selectedDevice = null;
             this.currentConfig = this.getDefaultConfig();
             this.renderDeviceList();
@@ -95,6 +99,8 @@ const UVCManager = {
         this.editingInstanceId = instance.id;
         this.editingInstanceName = instance.name || '';
         this.editingDevicePath = cfg.device_path || '';
+        this.editingDeviceSerial = cfg.device_serial || null;
+        this.autostart = instance.autostart || false;
         this.currentConfig = {
             format: cfg.format_type || 'auto',
             width: cfg.width || 1920,
@@ -342,6 +348,9 @@ const UVCManager = {
             this.showNotification('Please enter an instance name', 'error');
             return;
         }
+        
+        const autostartCheckbox = document.getElementById('uvc-autostart');
+        const autostart = autostartCheckbox ? autostartCheckbox.checked : false;
 
         const btn = document.getElementById('uvc-create-btn');
         btn.disabled = true;
@@ -363,7 +372,8 @@ const UVCManager = {
                     this.currentConfig.encoder,
                     this.currentConfig.bitrate * 1000,
                     this.currentConfig.outputType,
-                    outputConfig
+                    outputConfig,
+                    autostart
                 ] : [
                     name,
                     this.selectedDevice.device_path,
@@ -374,7 +384,8 @@ const UVCManager = {
                     this.currentConfig.encoder,
                     this.currentConfig.bitrate * 1000,
                     this.currentConfig.outputType,
-                    outputConfig
+                    outputConfig,
+                    autostart
                 ])
             );
 
@@ -383,15 +394,17 @@ const UVCManager = {
             if (response.error) {
                 this.showNotification(`Failed: ${response.error}`, 'error');
             } else {
+                const serialMsg = response.device_serial ? ` (Serial: ${response.device_serial})` : '';
                 await callMethod("StartInstance", response.instance_id);
                 if (typeof refreshInstances === 'function') {
                     await refreshInstances();
                 }
                 this.showNotification(
-                    `${this.editingInstanceId ? 'Instance updated and started' : 'Instance created and started'}: ${response.instance_id}`, 
+                    `${this.editingInstanceId ? 'Instance updated and started' : 'Instance created and started'}: ${response.instance_id}${serialMsg}`, 
                     'success'
                 );
                 this.editingInstanceId = response.instance_id;
+                this.editingDeviceSerial = response.device_serial || null;
             }
         } catch (error) {
             console.error('Failed to create UVC instance:', error);
@@ -459,7 +472,7 @@ const UVCManager = {
                 <div class="device-icon">📹</div>
                 <div class="device-info">
                     <div class="device-name">${this.escapeHtml(device.name)}</div>
-                    <div class="device-path">${device.device_path}</div>
+                    <div class="device-path">${device.device_path}${device.serial ? ` <span class="device-serial">(Serial: ${this.escapeHtml(device.serial)})</span>` : ''}</div>
                     <div class="device-formats">
                         ${device.is_h264_passthrough ? '<span class="badge h264">H.264</span>' : ''}
                         ${device.is_mjpeg ? '<span class="badge mjpeg">MJPEG</span>' : ''}
@@ -496,6 +509,7 @@ const UVCManager = {
             <div class="device-details">
                 <h4>${this.escapeHtml(this.selectedDevice.name)}</h4>
                 <p><strong>Device:</strong> ${this.selectedDevice.device_path}</p>
+                ${this.selectedDevice.serial ? `<p><strong>Serial:</strong> <span class="device-serial">${this.escapeHtml(this.selectedDevice.serial)}</span></p>` : ''}
                 <p><strong>Bus:</strong> ${this.selectedDevice.bus_info}</p>
                 <p><strong>Driver:</strong> ${this.selectedDevice.driver}</p>
                 <h5>Supported Formats:</h5>
@@ -517,6 +531,21 @@ const UVCManager = {
                     <input type="text" id="uvc-instance-name" 
                            placeholder="My UVC Camera"
                            value="${this.escapeHtml(this.editingInstanceName || (this.selectedDevice.name + ' Pipeline'))}">
+                </div>
+                
+                ${this.selectedDevice.serial ? `
+                <div class="form-group device-serial-info">
+                    <label>Device Serial:</label>
+                    <span class="serial-badge">${this.escapeHtml(this.selectedDevice.serial)}</span>
+                    <span class="hint">Used for persistent device identification</span>
+                </div>
+                ` : ''}
+
+                <div class="form-group checkbox-group">
+                    <label>
+                        <input type="checkbox" id="uvc-autostart" ${this.autostart ? 'checked' : ''}>
+                        Auto-start when device is connected
+                    </label>
                 </div>
 
                 <div class="form-group">

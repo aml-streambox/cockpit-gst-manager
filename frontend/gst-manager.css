@@ -1485,3 +1485,43 @@ body {
         grid-template-columns: 1fr;
     }
 }
+
+.device-serial {
+    font-size: 0.85em;
+    color: #6b7280;
+    font-family: monospace;
+}
+
+.serial-badge {
+    display: inline-block;
+    background: #e0f2fe;
+    color: #0369a1;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-family: monospace;
+    font-size: 0.9em;
+}
+
+.device-serial-info .hint {
+    display: block;
+    font-size: 0.8em;
+    color: #6b7280;
+    margin-top: 4px;
+}
+
+.checkbox-group {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.checkbox-group input[type="checkbox"] {
+    width: auto;
+}
+
+.checkbox-group label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+}

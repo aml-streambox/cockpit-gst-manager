@@ -22,6 +22,7 @@ from discovery import DiscoveryManager
 from history import HistoryManager
 from events import EventManager
 from auto_instance import AutoInstanceManager
+from uvc_instance import UVCInstanceManager
 
 # Configuration paths
 CONFIG_DIR = Path("/var/lib/gst-manager")
@@ -91,6 +92,7 @@ class GstManagerDaemon:
         self.discovery_manager = DiscoveryManager(CONFIG_DIR)
         self.instance_manager = InstanceManager(self.history_manager)
         self.auto_instance_manager = AutoInstanceManager(self.instance_manager)
+        self.uvc_instance_manager = UVCInstanceManager(self.instance_manager)
         self.event_manager = None  # Initialized after service starts
 
     async def start(self) -> None:
@@ -104,9 +106,11 @@ class GstManagerDaemon:
         # Load existing instances
         await self.instance_manager.load_instances()
 
-        # Initialize auto instance manager - always creates default config
-        # No config file needed - uses hardcoded defaults
+        # Load auto instance config
         await self.auto_instance_manager.load()
+        
+        # Load UVC instance configs
+        await self.uvc_instance_manager.load()
         
         # Always create the auto instance at startup with default settings
         # The pipeline will be regenerated with correct resolution when HDMI is detected
@@ -125,7 +129,8 @@ class GstManagerDaemon:
             discovery_manager=self.discovery_manager,
             history_manager=self.history_manager,
             config=self.config,
-            auto_instance_manager=self.auto_instance_manager
+            auto_instance_manager=self.auto_instance_manager,
+            uvc_instance_manager=self.uvc_instance_manager
         )
         await self.service.start()
 
@@ -135,7 +140,8 @@ class GstManagerDaemon:
         self.event_manager = EventManager(
             instance_manager=self.instance_manager,
             service=self.service,
-            auto_instance_manager=self.auto_instance_manager
+            auto_instance_manager=self.auto_instance_manager,
+            uvc_instance_manager=self.uvc_instance_manager
         )
         await self.event_manager.start()
         
@@ -150,6 +156,9 @@ class GstManagerDaemon:
 
         # Auto-start instances with "boot" trigger
         await self._start_boot_instances()
+        
+        # Auto-start UVC instances configured for auto-start
+        await self.uvc_instance_manager.start_all_autostart()
 
         # Initialize AI agent
         try:

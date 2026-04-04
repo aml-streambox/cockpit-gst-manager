@@ -64,7 +64,8 @@ if DBUS_LIBRARY == "dbus_next":
             discovery_manager,
             history_manager,
             config: Dict,
-            auto_instance_manager=None
+            auto_instance_manager=None,
+            uvc_instance_manager=None
         ):
             super().__init__(INTERFACE_NAME)
             self.instance_manager = instance_manager
@@ -72,6 +73,7 @@ if DBUS_LIBRARY == "dbus_next":
             self.history_manager = history_manager
             self.config = config
             self.auto_instance_manager = auto_instance_manager
+            self.uvc_instance_manager = uvc_instance_manager
             self.event_manager = None  # Set after EventManager is created
             self.ai_agent = None  # Set after AI agent is created
 
@@ -239,7 +241,8 @@ if DBUS_LIBRARY == "dbus_next":
             encoder: "s",
             bitrate: "i",
             output_type: "s",
-            output_config_json: "s"
+            output_config_json: "s",
+            autostart: "b" = False
         ) -> "s":
             """Create a new UVC device pipeline instance.
             
@@ -254,35 +257,26 @@ if DBUS_LIBRARY == "dbus_next":
                 bitrate: Video bitrate in bps
                 output_type: Output type ("srt", "rtmp", "file", "display")
                 output_config_json: JSON with output-specific configuration
+                autostart: Auto-start when device is connected
                 
             Returns:
                 Instance ID or error message
             """
             try:
-                from uvc_utils import UVCDiscovery, UVCPipelineBuilder, UVCDevice, VideoFormat, FrameSize
-                
-                # Discover devices to get device info
-                discovery = UVCDiscovery()
-                devices = await discovery.discover()
-                
-                # Find the requested device
-                device = None
-                for d in devices:
-                    if d.device_path == device_path:
-                        device = d
-                        break
-                
-                if not device:
-                    return json.dumps({"error": f"Device {device_path} not found"})
+                if not self.uvc_instance_manager:
+                    return json.dumps({"error": "UVC manager not initialized"})
                 
                 # Parse output config
                 output_config = {}
                 if output_config_json:
                     output_config = json.loads(output_config_json)
                 
-                # Build pipeline
-                builder = UVCPipelineBuilder(device)
-                pipeline = builder.build_pipeline(
+                # Create instance with serial ID tracking
+                instance_id = await self.uvc_instance_manager.create_instance(
+                    name=name,
+                    device_serial=None,  # Will be discovered from device
+                    device_path=device_path,
+                    device_name=None,
                     format_type=format_type,
                     width=width,
                     height=height,
@@ -290,31 +284,18 @@ if DBUS_LIBRARY == "dbus_next":
                     encoder=encoder,
                     bitrate=bitrate,
                     output_type=output_type,
-                    output_config=output_config
+                    output_config=output_config,
+                    autostart=autostart
                 )
                 
-                # Create instance
-                instance_id = await self.instance_manager.create_instance(name, pipeline)
+                # Get the serial from the created config
+                config = self.uvc_instance_manager.get_config(instance_id)
+                serial = config.device_serial if config else None
                 
-                # Save UVC-specific configuration
-                instance = self.instance_manager.get_instance(instance_id)
-                if instance:
-                    from instances import InstanceType
-                    instance.instance_type = InstanceType.UVC
-                    instance.uvc_config = {
-                        "device_path": device_path,
-                        "format_type": format_type,
-                        "width": width,
-                        "height": height,
-                        "fps": fps,
-                        "encoder": encoder,
-                        "bitrate": bitrate,
-                        "output_type": output_type,
-                        "output_config": output_config
-                    }
-                    await self.history_manager.save_instance(instance.to_dict())
-                
-                return json.dumps({"instance_id": instance_id, "pipeline": pipeline})
+                return json.dumps({
+                    "instance_id": instance_id,
+                    "device_serial": serial
+                })
                 
             except Exception as e:
                 logger.error(f"CreateUVCInstance failed: {e}")
@@ -333,26 +314,20 @@ if DBUS_LIBRARY == "dbus_next":
             encoder: "s",
             bitrate: "i",
             output_type: "s",
-            output_config_json: "s"
+            output_config_json: "s",
+            autostart: "b" = False
         ) -> "s":
             """Update an existing UVC device pipeline instance."""
             try:
-                from uvc_utils import UVCDiscovery, UVCPipelineBuilder
-                from instances import InstanceType
-
-                instance = self.instance_manager.get_instance(instance_id)
-                if not instance:
-                    return json.dumps({"error": f"Instance {instance_id} not found"})
-
-                discovery = UVCDiscovery()
-                devices = await discovery.discover()
-                device = next((d for d in devices if d.device_path == device_path), None)
-                if not device:
-                    return json.dumps({"error": f"Device {device_path} not found"})
-
+                if not self.uvc_instance_manager:
+                    return json.dumps({"error": "UVC manager not initialized"})
+                
                 output_config = json.loads(output_config_json) if output_config_json else {}
-                builder = UVCPipelineBuilder(device)
-                pipeline = builder.build_pipeline(
+                
+                success = await self.uvc_instance_manager.update_instance(
+                    instance_id=instance_id,
+                    name=name,
+                    device_path=device_path,
                     format_type=format_type,
                     width=width,
                     height=height,
@@ -360,26 +335,20 @@ if DBUS_LIBRARY == "dbus_next":
                     encoder=encoder,
                     bitrate=bitrate,
                     output_type=output_type,
-                    output_config=output_config
+                    output_config=output_config,
+                    autostart=autostart
                 )
-
-                instance.name = name
-                instance.pipeline = pipeline
-                instance.instance_type = InstanceType.UVC
-                instance.uvc_config = {
-                    "device_path": device_path,
-                    "format_type": format_type,
-                    "width": width,
-                    "height": height,
-                    "fps": fps,
-                    "encoder": encoder,
-                    "bitrate": bitrate,
-                    "output_type": output_type,
-                    "output_config": output_config
-                }
-
-                await self.history_manager.save_instance(instance.to_dict())
-                return json.dumps({"instance_id": instance_id, "pipeline": pipeline})
+                
+                if success:
+                    config = self.uvc_instance_manager.get_config(instance_id)
+                    return json.dumps({
+                        "instance_id": instance_id,
+                        "device_serial": config.device_serial if config else None,
+                        "device_path": config.device_path if config else None
+                    })
+                else:
+                    return json.dumps({"error": f"Failed to update instance {instance_id}"})
+                
             except Exception as e:
                 logger.error(f"UpdateUVCInstance failed: {e}")
                 return json.dumps({"error": str(e)})
@@ -829,13 +798,15 @@ if DBUS_LIBRARY == "dbus_next":
             discovery_manager,
             history_manager,
             config: Dict,
-            auto_instance_manager=None
+            auto_instance_manager=None,
+            uvc_instance_manager=None
         ):
             self.instance_manager = instance_manager
             self.discovery_manager = discovery_manager
             self.history_manager = history_manager
             self.config = config
             self.auto_instance_manager = auto_instance_manager
+            self.uvc_instance_manager = uvc_instance_manager
             self.bus = None
             self.interface = None
 
@@ -848,7 +819,8 @@ if DBUS_LIBRARY == "dbus_next":
                 self.discovery_manager,
                 self.history_manager,
                 self.config,
-                auto_instance_manager=self.auto_instance_manager
+                auto_instance_manager=self.auto_instance_manager,
+                uvc_instance_manager=self.uvc_instance_manager
             )
 
             self.bus.export(OBJECT_PATH, self.interface)

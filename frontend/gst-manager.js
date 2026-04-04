@@ -352,12 +352,17 @@ function updateDetailView() {
         const rows = [
             ['Type', 'UVC Device'],
             ['Device', cfg.device_path || '-'],
+        ];
+        if (cfg.device_serial) {
+            rows.push(['Serial', cfg.device_serial]);
+        }
+        rows.push(
             ['Format', cfg.format_type || 'auto'],
             ['Resolution', `${cfg.width || '-'}x${cfg.height || '-'}`],
             ['FPS', `${cfg.fps || '-'}`],
             ['Encoder', cfg.encoder || '-'],
             ['Output', cfg.output_type || '-']
-        ];
+        );
         document.getElementById("detail-pipeline").innerHTML = renderInstanceSummary(rows, inst.pipeline);
     } else {
         document.getElementById("detail-pipeline").textContent = 'gst-launch-1.0 -e ' + inst.pipeline;
