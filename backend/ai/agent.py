@@ -59,10 +59,18 @@ If the user asks anything unrelated to GStreamer pipelines, respond:
 
 ## AUDIO INPUT
 
-### HDMI Audio (HDMI RX loopback)
-- Device: hw:0,6 (HDMI RX loopback)
+### HDMI Audio (HDMI RX via TX loopback — normal mode)
+- Device: hw:0,6 (EXTN-tv, HDMI TX audio loopback)
 - Source: alsasrc device=hw:0,6 buffer-time=500000 provide-clock=false slave-method=re-timestamp
-- Use when capturing audio from HDMI source
+- Use when HDMI TX is connected (normal passthrough mode)
+- IMPORTANT: provide-clock=false and slave-method=re-timestamp are REQUIRED to avoid A/V sync issues
+- NOTE: This device is NOT available in headless mode (no HDMI TX)
+
+### HDMI Audio (Direct HDMI RX I2S — headless mode)
+- Device: hw:0,2 (TDM-A, direct HDMI RX I2S capture)
+- Source: alsasrc device=hw:0,2 buffer-time=500000 provide-clock=false slave-method=re-timestamp
+- Use when in headless mode (no HDMI TX connected)
+- This is the direct I2S audio path from the HDMI RX chip
 - IMPORTANT: provide-clock=false and slave-method=re-timestamp are REQUIRED to avoid A/V sync issues
 
 ### Line In Audio
@@ -109,7 +117,11 @@ gst-launch-1.0 -e -v \\
   mpegtsmux name=mux alignment=7 latency=100000000 ! \\
   srtsink uri="srt://:8888" wait-for-connection=false latency=600 sync=false
 
-Note: Change alsasrc device from hw:0,6 (HDMI RX loopback) to hw:0,0 (Line In) if using Line In audio source.
+Note: Audio device depends on mode:
+- Normal mode (TX connected): hw:0,6 (EXTN-tv, HDMI TX audio loopback)
+- Headless mode (no TX): hw:0,2 (TDM-A, direct HDMI RX I2S capture)
+- Line In: hw:0,0
+The pipeline builder auto-selects hw:0,2 in headless mode when HDMI_RX audio is configured.
 
 **High Refresh Rate & Ultrawide Notes:**
 - For high-refresh modes (120-240fps), scale bitrate proportionally:
@@ -149,7 +161,7 @@ gst-launch-1.0 -e -v \\
 - Match framerate in amlvenc to the input framerate
 - Set gop = framerate * interval_seconds (e.g., gop=60 for 60fps with 1-second GOP)
 - Use wait-for-connection=false for SRT server/passive mode
-- For audio device: Use hw:0,6 for HDMI RX loopback audio, or hw:0,0 for Line In audio source
+- For audio device: Use hw:0,6 (normal mode with TX), hw:0,2 (headless mode, no TX), or hw:0,0 (Line In)
 - Always include audio unless explicitly asked not to
 """
 

@@ -17,7 +17,7 @@ logger = logging.getLogger("gst-manager.discovery")
 # Known device paths
 VDIN_DEVICES = ["/dev/video71", "/dev/video0", "/dev/video1", "/dev/video2"]
 VFMCAP_DEVICES = ["/dev/video_cap"]  # vfm_cap raw capture device (Path A)
-AUDIO_DEVICES = ["hw:0,0", "hw:1,0"]
+AUDIO_DEVICES = ["hw:0,0", "hw:0,2", "hw:0,6", "hw:1,0"]
 STORAGE_PATHS = ["/mnt/sdcard", "/data", "/mnt/usb"]
 HDMIRX_SYSFS = "/sys/class/hdmirx/hdmirx0"
 
@@ -176,13 +176,23 @@ class DiscoveryManager:
         """Discover audio input devices."""
         inputs = []
 
+        device_labels = {
+            "hw:0,0": ("hdmi-tx-playback", "TDM-B (HDMI TX I2S playback)"),
+            "hw:0,2": ("hdmi-rx-direct", "TDM-A (direct HDMI RX I2S capture)"),
+            "hw:0,6": ("hdmi-rx-loopback", "EXTN-tv (HDMI TX audio loopback)"),
+            "hw:1,0": ("audio", "USB/external audio"),
+        }
+
         for device in AUDIO_DEVICES:
             available = await self._check_alsa_device(device)
-            device_type = "hdmi-audio" if device == "hw:0,0" else "audio"
+            device_type, description = device_labels.get(
+                device, ("audio", "Unknown audio device")
+            )
 
             inputs.append({
                 "device": device,
                 "type": device_type,
+                "description": description,
                 "available": available
             })
 

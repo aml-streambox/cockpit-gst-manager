@@ -268,6 +268,14 @@ class TvClientLib:
         except AttributeError:
             logger.debug("ALLM/VRR functions not available")
 
+        # Headless mode function (STREAM_BOX only)
+        try:
+            # int SetHeadlessMode(struct TvClientWrapper_t *pTvClientWrapper, int headless)
+            self._lib.SetHeadlessMode.restype = c_int
+            self._lib.SetHeadlessMode.argtypes = [c_void_p, c_int]
+        except AttributeError:
+            logger.debug("SetHeadlessMode function not available")
+
     @property
     def available(self) -> bool:
         """Check if library is loaded and connected."""
@@ -349,6 +357,34 @@ class TvClientLib:
         try:
             return self._lib.GetSourceConnectStatus(self._handle, source) == 1
         except Exception:
+            return False
+
+    def set_headless_mode(self, headless: bool) -> bool:
+        """Set tvserver headless mode (no HDMI TX connected).
+        
+        When headless=True, tvserver uses vdin0→vfm_cap VFM path directly,
+        skipping all display/passthrough code.  When headless=False, tvserver
+        returns to normal display pipeline.
+        
+        Args:
+            headless: True to enter headless mode, False to exit.
+            
+        Returns:
+            True if the call succeeded.
+        """
+        if not self.available:
+            logger.warning("Cannot set headless mode: tvservice not connected")
+            return False
+        
+        try:
+            result = self._lib.SetHeadlessMode(self._handle, 1 if headless else 0)
+            logger.info(f"SetHeadlessMode({headless}) returned {result}")
+            return result == 0
+        except AttributeError:
+            logger.warning("SetHeadlessMode not available in this libtvclient build")
+            return False
+        except Exception as e:
+            logger.error(f"SetHeadlessMode failed: {e}")
             return False
 
     # HDR sysfs paths (from HDMI RX driver)

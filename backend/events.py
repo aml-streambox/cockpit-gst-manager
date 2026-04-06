@@ -11,7 +11,7 @@ import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional, Callable, Any, Dict
+from typing import Optional, Callable, Any, Dict, List
 
 logger = logging.getLogger("gst-manager.events")
 
@@ -647,8 +647,23 @@ class EventManager:
     When RX is stable, waits 1.5 seconds for TX stabilization, then checks
     TX status via sysfs.
     
-    Also monitors UVC device hot-plug events.
+    Also monitors:
+    - TX HPD (Hot Plug Detect) state for headless mode transitions
+    - UVC device hot-plug events
+    
+    Headless mode: When HDMI TX is not connected (HPD low), the system
+    enters headless mode where vfm_cap captures directly from vdin0
+    without any display pipeline dependency.
     """
+
+    # TX HPD sysfs path
+    TX_HPD_SYSFS_PATH = Path("/sys/class/amhdmitx/amhdmitx0/ready")
+    
+    # TX HPD polling interval
+    TX_HPD_POLL_INTERVAL = 2.0
+    
+    # Delay after TX connect before checking EDID/signal (seconds)
+    TX_CONNECT_SETTLE_DELAY = 3.0
 
     def __init__(
         self,
@@ -679,6 +694,12 @@ class EventManager:
         self._periodic_poll_task: Optional[asyncio.Task] = None
         self._last_passthrough_state: Optional[Dict[str, Any]] = None
         
+        # TX HPD (headless mode) tracking
+        self._tx_hpd_connected: Optional[bool] = None  # None = unknown
+        self._tx_hpd_monitor_task: Optional[asyncio.Task] = None
+        self._headless_mode: bool = False
+        self._tvservice_client_for_headless: Optional[Any] = None
+        
         # UVC device monitoring
         self._uvc_monitor_task: Optional[asyncio.Task] = None
         self._last_uvc_devices: List[Any] = []
@@ -697,6 +718,14 @@ class EventManager:
         # This makes the polling loop wake immediately when tvserver
         # detects a signal change, instead of waiting 2-5 seconds.
         self._setup_native_event_bridge()
+        
+        # Detect initial TX HPD state and enter headless mode if needed.
+        # This MUST happen before _check_initial_state() so that tvserver
+        # is put into headless mode before we start polling for RX signal.
+        await self._detect_initial_tx_hpd_state()
+        
+        # Start TX HPD monitoring loop for hot-plug transitions
+        self._tx_hpd_monitor_task = asyncio.create_task(self._tx_hpd_monitor_loop())
         
         # Check initial state - HDMI might already be stable
         # This handles the case where gst-manager starts after HDMI is already settled
@@ -795,7 +824,10 @@ class EventManager:
                         # Trigger auto instance
                         if self.auto_instance_manager:
                             await self.auto_instance_manager.on_hdmi_signal_ready(stable_status)
-                        await self._check_tx_status()
+                        if not self._headless_mode:
+                            await self._check_tx_status()
+                        else:
+                            logger.info("Headless mode: skipping TX check in initial state")
                         return
                 else:
                     # Reading changed - reset counter
@@ -836,9 +868,12 @@ class EventManager:
                         self.last_hdmi_status = stable_status
                         if self.auto_instance_manager:
                             await self.auto_instance_manager.on_hdmi_signal_ready(stable_status)
-                        # Wait 1.5s then check TX
-                        await asyncio.sleep(1.5)
-                        await self._check_tx_status()
+                        # Wait 1.5s then check TX (skip in headless mode)
+                        if not self._headless_mode:
+                            await asyncio.sleep(1.5)
+                            await self._check_tx_status()
+                        else:
+                            logger.info("Headless mode: skipping TX check in periodic polling")
                         break
                 else:
                     # Reading changed - reset counter
@@ -865,6 +900,12 @@ class EventManager:
                 await self._periodic_poll_task
             except asyncio.CancelledError:
                 pass
+        if self._tx_hpd_monitor_task:
+            self._tx_hpd_monitor_task.cancel()
+            try:
+                await self._tx_hpd_monitor_task
+            except asyncio.CancelledError:
+                pass
         if self._uvc_monitor_task:
             self._uvc_monitor_task.cancel()
             try:
@@ -885,6 +926,9 @@ class EventManager:
         vdin1 is a loopback of hdmitx (HDMI TX output).
         Once hdmitx is ready, we can capture from vdin1.
         
+        In headless mode (no TX), passthrough is not available for vdin1,
+        but vfmcap capture works directly from vdin0.
+        
         Returns:
             Dictionary with RX/TX status and capture readiness
         """
@@ -904,6 +948,7 @@ class EventManager:
             "tx_connected": self._tx_status.connected if self._tx_status else False,
             "tx_ready": tx_ready,
             "tx_enabled": self._tx_status.enabled if self._tx_status else False,
+            "headless_mode": self._headless_mode,
             "width": self._tx_status.width if self._tx_status else 0,
             "height": self._tx_status.height if self._tx_status else 0,
             "framerate": self._tx_status.fps if self._tx_status else 0,
@@ -947,18 +992,25 @@ class EventManager:
         """Handle HDMI RX signal becoming stable.
         
         Schedules TX check after 1.5 second delay for TX stabilization.
+        In headless mode, skips the TX check since TX is not connected.
         """
         logger.info(f"HDMI RX signal ready: {status.resolution}")
         
         # Mark RX as stable
         self._rx_stable_time = time.time()
-        logger.info(f"RX marked as stable, scheduling TX check in 1.5s")
 
         if self.auto_instance_manager:
             try:
                 await self.auto_instance_manager.on_hdmi_signal_ready(status)
             except Exception as e:
                 logger.error(f"Auto instance manager RX-ready error: {e}")
+        
+        # In headless mode, skip TX check entirely — TX is not connected
+        if self._headless_mode:
+            logger.info("Headless mode: skipping TX check (TX not connected)")
+            return
+        
+        logger.info("RX marked as stable, scheduling TX check in 1.5s")
         
         # Cancel any pending TX check
         if self._tx_check_task and not self._tx_check_task.done():
@@ -1052,6 +1104,204 @@ class EventManager:
                     await self.auto_instance_manager.on_passthrough_lost()
                 except Exception as e:
                     logger.error(f"Auto instance manager error: {e}")
+
+    # ------------------------------------------------------------------
+    # TX HPD (Hot Plug Detect) monitoring — headless mode
+    # ------------------------------------------------------------------
+
+    def _read_tx_hpd(self) -> Optional[bool]:
+        """Read HDMI TX HPD state from sysfs.
+        
+        Returns:
+            True if TX is connected (HPD high), False if disconnected,
+            None if sysfs is not readable.
+        """
+        try:
+            with open(self.TX_HPD_SYSFS_PATH, "r") as f:
+                value = f.read().strip()
+            return value == "1"
+        except (IOError, OSError) as e:
+            logger.debug(f"Failed to read TX HPD sysfs: {e}")
+            return None
+
+    def _get_or_create_headless_client(self):
+        """Get or create a TvClientLib instance for headless mode calls."""
+        if self._tvservice_client_for_headless is not None:
+            if self._tvservice_client_for_headless.available:
+                return self._tvservice_client_for_headless
+            # Client went stale, recreate
+            self._tvservice_client_for_headless = None
+        
+        if not TVSERVICE_AVAILABLE:
+            return None
+        
+        try:
+            client = tvservice.TvClientLib()
+            if client.connect():
+                self._tvservice_client_for_headless = client
+                return client
+            logger.warning("Could not connect tvservice client for headless mode")
+        except Exception as e:
+            logger.warning(f"Failed to create tvservice client for headless mode: {e}")
+        return None
+
+    async def _detect_initial_tx_hpd_state(self) -> None:
+        """Detect TX HPD state at startup and enter headless mode if needed.
+        
+        Called once during start(), before _check_initial_state().
+        """
+        hpd_connected = self._read_tx_hpd()
+        
+        if hpd_connected is None:
+            logger.info("TX HPD sysfs not readable, assuming TX connected (non-headless)")
+            self._tx_hpd_connected = True
+            self._headless_mode = False
+            return
+        
+        self._tx_hpd_connected = hpd_connected
+        
+        if not hpd_connected:
+            logger.info("TX HPD is LOW at startup — entering headless mode")
+            self._headless_mode = True
+            client = self._get_or_create_headless_client()
+            if client:
+                client.set_headless_mode(True)
+            else:
+                logger.warning("Cannot call SetHeadlessMode: tvservice client unavailable")
+        else:
+            logger.info("TX HPD is HIGH at startup — normal (non-headless) mode")
+            self._headless_mode = False
+
+    async def _tx_hpd_monitor_loop(self) -> None:
+        """Monitor TX HPD state changes for headless mode transitions.
+        
+        Polls TX HPD sysfs at TX_HPD_POLL_INTERVAL and detects transitions:
+        - connected → disconnected: enter headless mode
+        - disconnected → connected: exit headless mode, reload EDID, restart pipeline
+        """
+        logger.info("TX HPD monitor started (headless=%s)", self._headless_mode)
+        
+        while True:
+            try:
+                await asyncio.sleep(self.TX_HPD_POLL_INTERVAL)
+                
+                hpd_connected = self._read_tx_hpd()
+                if hpd_connected is None:
+                    continue  # sysfs not readable, skip
+                
+                # Detect transition
+                if self._tx_hpd_connected is not None and hpd_connected != self._tx_hpd_connected:
+                    if hpd_connected:
+                        # Transition: disconnected → connected
+                        logger.info("TX HPD transition: disconnected → connected")
+                        self._tx_hpd_connected = True
+                        await self._on_tx_hpd_connected()
+                    else:
+                        # Transition: connected → disconnected
+                        logger.info("TX HPD transition: connected → disconnected")
+                        self._tx_hpd_connected = False
+                        await self._on_tx_hpd_disconnected()
+                elif self._tx_hpd_connected is None:
+                    # First reading after init (shouldn't happen if _detect_initial ran)
+                    self._tx_hpd_connected = hpd_connected
+                    
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"TX HPD monitor error: {e}")
+                await asyncio.sleep(5.0)
+
+    async def _on_tx_hpd_disconnected(self) -> None:
+        """Handle TX HPD going low (display disconnected).
+        
+        1. Tell tvserver to enter headless mode
+        2. If auto instance uses VDIN1, stop pipeline (VDIN1 requires TX)
+        3. If auto instance uses VFMCAP, pipeline can continue (headless-compatible)
+        4. Reset TX status since TX is gone
+        """
+        self._headless_mode = True
+        
+        # Tell tvserver to enter headless mode
+        client = self._get_or_create_headless_client()
+        if client:
+            client.set_headless_mode(True)
+        else:
+            logger.warning("Cannot call SetHeadlessMode(True): tvservice client unavailable")
+        
+        # Reset TX state
+        self._tx_status = None
+        
+        # Check if auto instance needs to react
+        if self.auto_instance_manager and self.auto_instance_manager.config:
+            from auto_instance import CaptureSource
+            capture_source = self.auto_instance_manager.config.capture_source
+            
+            if capture_source == CaptureSource.VDIN1:
+                # VDIN1 requires TX — stop pipeline, mark waiting
+                logger.info("TX disconnected: VDIN1 pipeline requires TX, stopping auto instance")
+                await self.auto_instance_manager.on_passthrough_lost()
+            else:
+                # VFMCAP does NOT require TX — pipeline continues in headless mode.
+                # The tvserver will reconfigure VFM path to vdin0→vfm_cap.
+                # RX signal may briefly glitch during headless transition, but
+                # HdmiMonitor will handle that through its normal flow.
+                logger.info("TX disconnected: VFMCAP pipeline continues in headless mode")
+        
+        # Evaluate passthrough state (will report can_capture=False for VDIN1)
+        await self._evaluate_passthrough_state()
+        
+        # Emit D-Bus signal for TX HPD change
+        if self.service:
+            try:
+                self.service.emit_hdmi_signal(
+                    self.last_hdmi_status.signal_locked if self.last_hdmi_status else False,
+                    self.last_hdmi_status.resolution if self.last_hdmi_status else ""
+                )
+            except Exception as e:
+                logger.debug(f"Failed to emit HDMI signal after TX disconnect: {e}")
+
+    async def _on_tx_hpd_connected(self) -> None:
+        """Handle TX HPD going high (display connected).
+        
+        1. Tell tvserver to exit headless mode
+        2. Wait for TX to stabilize (EDID negotiation, display init)
+        3. RX may need to re-lock with new EDID from TX
+        4. Restart pipeline with possibly new resolution/HDR parameters
+        """
+        self._headless_mode = False
+        
+        # Tell tvserver to exit headless mode
+        client = self._get_or_create_headless_client()
+        if client:
+            client.set_headless_mode(False)
+        else:
+            logger.warning("Cannot call SetHeadlessMode(False): tvservice client unavailable")
+        
+        # Wait for TX to stabilize (EDID negotiation, display init)
+        logger.info(f"Waiting {self.TX_CONNECT_SETTLE_DELAY}s for TX to stabilize after connect")
+        await asyncio.sleep(self.TX_CONNECT_SETTLE_DELAY)
+        
+        # Check TX status
+        await self._check_tx_status()
+        
+        # The RX signal may change due to new EDID from TX.
+        # The HdmiMonitor will detect this through its normal polling loop.
+        # If the signal changes, it will trigger on_signal_ready/on_status_change
+        # which will cause auto-instance to restart with new parameters.
+        
+        # Force a re-check of RX signal in case it hasn't changed but we need
+        # to re-evaluate whether to start the auto instance.
+        if self.hdmi_monitor:
+            self.hdmi_monitor.interrupt()
+        
+        # If RX is still stable and auto instance uses VDIN1, trigger passthrough check
+        if self._rx_stable_time is not None:
+            await self._evaluate_passthrough_state()
+
+    @property
+    def is_headless(self) -> bool:
+        """Check if the system is currently in headless mode (no TX connected)."""
+        return self._headless_mode
 
     async def _on_hdmi_signal_lost(self) -> None:
         """Handle HDMI signal lost - stop dependent instances."""

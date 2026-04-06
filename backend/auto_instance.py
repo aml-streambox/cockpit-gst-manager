@@ -44,7 +44,8 @@ class CaptureSource(Enum):
 
 class AudioSource(Enum):
     """Audio input source options."""
-    HDMI_RX = "hdmi_rx"  # hw:0,6 - HDMI RX loopback audio
+    HDMI_RX = "hdmi_rx"  # hw:0,6 - HDMI RX audio (via TV loopback, requires TX)
+    HDMI_RX_DIRECT = "hdmi_rx_direct"  # hw:0,2 - Direct HDMI RX I2S (headless only)
     LINE_IN = "line_in"  # hw:0,0 - Line in audio
 
 
@@ -162,7 +163,15 @@ class PipelineBuilder:
         # Calculate GOP from framerate and interval
         gop = int(config.framerate * config.gop_interval_seconds)
         
-        audio_device = "hw:0,6" if config.audio_source == AudioSource.HDMI_RX else "hw:0,0"
+        # Audio device selection:
+        #   HDMI_RX        -> hw:0,6 (EXTN-tv, HDMI TX audio loopback)
+        #   HDMI_RX_DIRECT -> hw:0,2 (TDM-A, direct HDMI RX I2S)
+        #   LINE_IN        -> hw:0,0 (TDM-B)
+        audio_device = {
+            AudioSource.HDMI_RX: "hw:0,6",
+            AudioSource.HDMI_RX_DIRECT: "hw:0,2",
+            AudioSource.LINE_IN: "hw:0,0",
+        }[config.audio_source]
         
         # Determine if we should use HDR 10-bit pipeline.
         # When the user explicitly enables use_hdr, trust their choice and
@@ -591,7 +600,6 @@ class AutoInstanceManager:
             Formatted pipeline string with line breaks
         """
         return self._builder.build_preview(config)
-
     async def on_passthrough_ready(self, hdmi_tx_status: Any) -> None:
         """Start TX-dependent auto capture when passthrough is ready."""
         if self._requires_tx_dependency():
