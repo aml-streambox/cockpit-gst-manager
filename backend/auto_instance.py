@@ -222,7 +222,7 @@ class PipelineBuilder:
             raise ValueError("Recording is currently supported only with SRT output")
 
         if config.output_transport == OutputTransport.SRT:
-            wait = "true" if config.srt_wait_for_connection else "false"
+            wait = "false"
             sink = (
                 'mpegtsmux name=mux alignment=7 latency=100000000 '
                 'pat-interval=1800 pmt-interval=1800'

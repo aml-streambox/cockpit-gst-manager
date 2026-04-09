@@ -70,7 +70,7 @@ class AutoConfigurator {
             'auto-capture-source', 'auto-gop-interval', 'auto-output-codec', 'auto-bitrate', 'auto-rc-mode',
             'auto-gop-pattern', 'auto-lossless-enable', 'auto-fixed-qp-value',
             'auto-audio-source', 'auto-output-transport', 'auto-srt-port',
-            'auto-srt-wait-for-connection', 'auto-rtmp-url', 'auto-rtsp-url',
+            'auto-rtmp-url', 'auto-rtsp-url',
             'auto-recording-enabled', 'auto-recording-path', 'auto-autostart',
             'auto-use-hdr', 'auto-signal-debounce', 'auto-max-restart-retries',
             'auto-restart-backoff-base', 'auto-restart-backoff-max'
@@ -339,11 +339,6 @@ class AutoConfigurator {
             recEnable.checked = this.config.recording_enabled;
         }
 
-        const srtWait = document.getElementById('auto-srt-wait-for-connection');
-        if (srtWait) {
-            srtWait.checked = this.config.srt_wait_for_connection === true;
-        }
-
         const autostart = document.getElementById('auto-autostart');
         if (autostart) {
             autostart.checked = this.config.autostart_on_ready;
@@ -410,7 +405,7 @@ class AutoConfigurator {
             audio_source: getValue('auto-audio-source', 'hdmi_rx'),
             output_transport: getValue('auto-output-transport', 'srt'),
             srt_port: parseInt(getValue('auto-srt-port', '8888')),
-            srt_wait_for_connection: getChecked('auto-srt-wait-for-connection'),
+            srt_wait_for_connection: false,
             rtmp_url: getValue('auto-rtmp-url', 'rtmp://127.0.0.1/live/stream'),
             rtsp_url: getValue('auto-rtsp-url', 'rtsp://127.0.0.1:8554/live/stream'),
             recording_enabled: getChecked('auto-recording-enabled'),
