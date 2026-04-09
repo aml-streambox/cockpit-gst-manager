@@ -486,7 +486,11 @@ if DBUS_LIBRARY == "dbus_next":
                     - lossless_enable: bool
                     - fixed_qp_value: int
                     - audio_source: str ("hdmi_rx" or "line_in")
+                    - output_transport: str ("srt", "rtmp", "rtsp")
                     - srt_port: int
+                    - srt_wait_for_connection: bool
+                    - rtmp_url: str
+                    - rtsp_url: str
                     - recording_enabled: bool
                     - recording_path: str
                     - autostart_on_ready: bool
@@ -503,7 +507,7 @@ if DBUS_LIBRARY == "dbus_next":
                 if not self.auto_instance_manager:
                     return False
                 
-                from auto_instance import AutoInstanceConfig, AudioSource, CaptureSource, OutputCodec
+                from auto_instance import AutoInstanceConfig, AudioSource, CaptureSource, OutputCodec, OutputTransport
                 
                 config_data = json.loads(config_json)
                 
@@ -518,7 +522,11 @@ if DBUS_LIBRARY == "dbus_next":
                     lossless_enable=config_data.get("lossless_enable", False),
                     fixed_qp_value=config_data.get("fixed_qp_value", 28),
                     audio_source=AudioSource(config_data.get("audio_source", "hdmi_rx")),
+                    output_transport=OutputTransport(config_data.get("output_transport", "srt")),
                     srt_port=config_data.get("srt_port", 8888),
+                    srt_wait_for_connection=config_data.get("srt_wait_for_connection", False),
+                    rtmp_url=config_data.get("rtmp_url", "rtmp://127.0.0.1/live/stream"),
+                    rtsp_url=config_data.get("rtsp_url", "rtsp://127.0.0.1:8554/live/stream"),
                     recording_enabled=config_data.get("recording_enabled", False),
                     recording_path=config_data.get("recording_path", "/mnt/sdcard/recordings/capture.ts"),
                     autostart_on_ready=config_data.get("autostart_on_ready", True),
@@ -564,7 +572,7 @@ if DBUS_LIBRARY == "dbus_next":
                 Pipeline string with line breaks
             """
             try:
-                from auto_instance import AutoInstanceConfig, PipelineBuilder, AudioSource, CaptureSource, OutputCodec
+                from auto_instance import AutoInstanceConfig, PipelineBuilder, AudioSource, CaptureSource, OutputCodec, OutputTransport
                 
                 config_data = json.loads(config_json)
                 config = AutoInstanceConfig(
@@ -577,7 +585,11 @@ if DBUS_LIBRARY == "dbus_next":
                     lossless_enable=config_data.get("lossless_enable", False),
                     fixed_qp_value=config_data.get("fixed_qp_value", 28),
                     audio_source=AudioSource(config_data.get("audio_source", "hdmi_rx")),
+                    output_transport=OutputTransport(config_data.get("output_transport", "srt")),
                     srt_port=config_data.get("srt_port", 8888),
+                    srt_wait_for_connection=config_data.get("srt_wait_for_connection", False),
+                    rtmp_url=config_data.get("rtmp_url", "rtmp://127.0.0.1/live/stream"),
+                    rtsp_url=config_data.get("rtsp_url", "rtsp://127.0.0.1:8554/live/stream"),
                     recording_enabled=config_data.get("recording_enabled", False),
                     recording_path=config_data.get("recording_path", "/mnt/sdcard/recordings/capture.ts"),
                     use_hdr=config_data.get("use_hdr", True),

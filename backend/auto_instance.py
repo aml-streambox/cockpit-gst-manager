@@ -56,6 +56,14 @@ class OutputCodec(Enum):
     H264 = "h264"
 
 
+class OutputTransport(Enum):
+    """Streaming transport options."""
+
+    SRT = "srt"
+    RTMP = "rtmp"
+    RTSP = "rtsp"
+
+
 @dataclass
 class AutoInstanceConfig:
     """Configuration for auto-generated instance.
@@ -80,7 +88,11 @@ class AutoInstanceConfig:
     audio_source: AudioSource = AudioSource.HDMI_RX
     
     # Streaming (always enabled)
+    output_transport: OutputTransport = OutputTransport.SRT
     srt_port: int = 8888
+    srt_wait_for_connection: bool = False
+    rtmp_url: str = "rtmp://127.0.0.1/live/stream"
+    rtsp_url: str = "rtsp://127.0.0.1:8554/live/stream"
     
     # Recording (optional)
     recording_enabled: bool = False
@@ -113,6 +125,7 @@ class AutoInstanceConfig:
         data["audio_source"] = self.audio_source.value
         data["capture_source"] = self.capture_source.value
         data["output_codec"] = self.output_codec.value
+        data["output_transport"] = self.output_transport.value
         return data
     
     @classmethod
@@ -124,6 +137,8 @@ class AutoInstanceConfig:
             data["capture_source"] = CaptureSource(data["capture_source"])
         if "output_codec" in data and isinstance(data["output_codec"], str):
             data["output_codec"] = OutputCodec(data["output_codec"])
+        if "output_transport" in data and isinstance(data["output_transport"], str):
+            data["output_transport"] = OutputTransport(data["output_transport"])
         # Filter out unknown fields
         valid_fields = cls.__dataclass_fields__.keys()
         filtered_data = {k: v for k, v in data.items() if k in valid_fields}
@@ -179,16 +194,15 @@ class PipelineBuilder:
         # Source auto-detection (source_is_hdr / source_color_depth) only
         # matters for the auto-start path in on_passthrough_ready().
         use_hdr_pipeline = config.use_hdr
+        video_target, audio_target, output_sink = self._build_transport_targets(config)
         
         # Build video source based on capture source selection
         if config.capture_source == CaptureSource.VFMCAP:
-            pipeline = self._build_vfmcap_source(config, gop, use_hdr_pipeline)
+            pipeline = self._build_vfmcap_source(config, gop, use_hdr_pipeline, video_target)
         elif config.capture_source == CaptureSource.VDIN1:
-            pipeline = self._build_vdin1_source(config, gop, use_hdr_pipeline)
+            pipeline = self._build_vdin1_source(config, gop, use_hdr_pipeline, video_target)
         else:
-            pipeline = self._build_v4l2_legacy_source(config, gop, use_hdr_pipeline)
-        
-        codec_caps, codec_parser = self._build_codec_output(config)
+            pipeline = self._build_v4l2_legacy_source(config, gop, use_hdr_pipeline, video_target)
 
         # Audio branch (same for all capture modes)
         pipeline += (
@@ -196,46 +210,110 @@ class PipelineBuilder:
             f'slave-method=re-timestamp ! '
             f'audio/x-raw,rate=48000,channels=2,format=S16LE ! '
             f'queue max-size-buffers=0 max-size-time=500000000 max-size-bytes=0 ! '
-            f'audioconvert ! audioresample ! avenc_aac bitrate=128000 ! aacparse ! '
-            f'queue max-size-buffers=0 max-size-time=500000000 max-size-bytes=0 ! '
-            f'mux. '
-            # Muxer definition
-            f'mpegtsmux name=mux alignment=7 latency=100000000'
+            f'{self._build_audio_output(config, audio_target)} '
+            f'{output_sink}'
         )
-        
-        # Output
-        if config.recording_enabled:
-            # Both recording and streaming - use tee
-            pipeline += (
-                f' ! tee name=t '
-                f't. ! queue ! filesink location="{config.recording_path}" '
-                f't. ! queue ! srtsink uri="srt://:{config.srt_port}" '
-                f'wait-for-connection=false latency=600 sync=false'
-            )
-        else:
-            # Streaming only
-            pipeline += (
-                f' ! srtsink uri="srt://:{config.srt_port}" '
-                f'wait-for-connection=false latency=600 sync=false'
-            )
-        
+
         return pipeline
 
-    def _build_codec_output(self, config: AutoInstanceConfig) -> tuple[str, str]:
-        """Build output caps and parser for the selected codec."""
+    def _build_transport_targets(self, config: AutoInstanceConfig) -> tuple[str, str, str]:
+        """Build branch targets and final sink for the selected transport."""
+        if config.recording_enabled and config.output_transport != OutputTransport.SRT:
+            raise ValueError("Recording is currently supported only with SRT output")
+
+        if config.output_transport == OutputTransport.SRT:
+            wait = "true" if config.srt_wait_for_connection else "false"
+            sink = (
+                'mpegtsmux name=mux alignment=7 latency=100000000 '
+                'pat-interval=1800 pmt-interval=1800'
+            )
+            if config.recording_enabled:
+                sink += (
+                    f' ! tee name=t '
+                    f't. ! queue ! filesink location="{config.recording_path}" '
+                    f't. ! queue ! srtsink uri="srt://:{config.srt_port}" '
+                    f'wait-for-connection={wait} latency=600 sync=false'
+                )
+            else:
+                sink += (
+                    f' ! srtsink uri="srt://:{config.srt_port}" '
+                    f'wait-for-connection={wait} latency=600 sync=false'
+                )
+            return ("mux.", "mux.", sink)
+
+        if config.output_transport == OutputTransport.RTMP:
+            if config.output_codec != OutputCodec.H264:
+                raise ValueError("RTMP output requires H.264 codec")
+            sink = (
+                'flvmux name=mux streamable=true '
+                f'! rtmpsink location="{config.rtmp_url}"'
+            )
+            return ("mux.", "mux.", sink)
+
+        sink = (
+            f'rtspclientsink name=rtsp location="{config.rtsp_url}" protocols=tcp'
+        )
+        return ("rtsp.", "rtsp.", sink)
+
+    def _build_video_output(self, config: AutoInstanceConfig, target: str) -> str:
+        """Build video parser/payloader branch for the selected transport."""
+        if config.output_transport == OutputTransport.SRT:
+            if config.output_codec == OutputCodec.H264:
+                return (
+                    'video/x-h264 ! h264parse config-interval=-1 ! '
+                    f'queue max-size-buffers=30 max-size-time=0 max-size-bytes=0 ! {target} '
+                )
+            return (
+                'video/x-h265 ! h265parse config-interval=-1 ! '
+                f'queue max-size-buffers=30 max-size-time=0 max-size-bytes=0 ! {target} '
+            )
+
+        if config.output_transport == OutputTransport.RTMP:
+            return (
+                'video/x-h264 ! h264parse config-interval=-1 ! '
+                'video/x-h264,stream-format=avc ! '
+                f'queue max-size-buffers=30 max-size-time=0 max-size-bytes=0 ! {target} '
+            )
+
         if config.output_codec == OutputCodec.H264:
-            return ("video/x-h264", "h264parse config-interval=-1")
-        return ("video/x-h265", "h265parse config-interval=-1")
+            return (
+                'video/x-h264 ! h264parse config-interval=-1 ! '
+                f'queue max-size-buffers=30 max-size-time=0 max-size-bytes=0 ! {target} '
+            )
+        return (
+            'video/x-h265 ! h265parse config-interval=-1 ! '
+            f'queue max-size-buffers=30 max-size-time=0 max-size-bytes=0 ! {target} '
+        )
+
+    def _build_audio_output(self, config: AutoInstanceConfig, target: str) -> str:
+        """Build audio parser/payloader branch for the selected transport."""
+        if config.output_transport == OutputTransport.RTSP:
+            return (
+                'audioconvert ! audioresample ! avenc_aac bitrate=128000 ! '
+                'aacparse ! '
+                f'queue max-size-buffers=0 max-size-time=500000000 max-size-bytes=0 ! {target}'
+            )
+
+        if config.output_transport == OutputTransport.RTMP:
+            return (
+                'audioconvert ! audioresample ! avenc_aac bitrate=128000 ! '
+                'aacparse ! audio/mpeg,mpegversion=4,stream-format=raw ! '
+                f'queue max-size-buffers=0 max-size-time=500000000 max-size-bytes=0 ! {target}'
+            )
+
+        return (
+            'audioconvert ! audioresample ! avenc_aac bitrate=128000 ! aacparse ! '
+            f'queue max-size-buffers=0 max-size-time=500000000 max-size-bytes=0 ! {target}'
+        )
     
     def _build_vfmcap_source(
-        self, config: AutoInstanceConfig, gop: int, use_hdr: bool
+        self, config: AutoInstanceConfig, gop: int, use_hdr: bool, video_target: str
     ) -> str:
         """Build Path A: streamboxsrc source=vfmcap pipeline.
         
         Path A always outputs P010_10LE for HDR (Vulkan GPU conversion from
         raw vfm_cap formats).  For SDR, outputs NV12.
         """
-        codec_caps, codec_parser = self._build_codec_output(config)
         if use_hdr:
             # HDR 10-bit: P010_10LE via Vulkan conversion
             return (
@@ -244,10 +322,7 @@ class PipelineBuilder:
                 f'framerate={config.framerate}/1 ! '
                 f'queue max-size-buffers=5 max-size-time=0 max-size-bytes=0 ! '
                 f'{self._build_encoder_settings(config, gop, hdr=True)} ! '
-                f'{codec_caps} ! '
-                f'{codec_parser} ! '
-                f'queue max-size-buffers=30 max-size-time=0 max-size-bytes=0 ! '
-                f'mux. '
+                f'{self._build_video_output(config, video_target)}'
             )
         else:
             # SDR 8-bit: NV12
@@ -257,21 +332,17 @@ class PipelineBuilder:
                 f'framerate={config.framerate}/1 ! '
                 f'queue max-size-buffers=5 max-size-time=0 max-size-bytes=0 ! '
                 f'{self._build_encoder_settings(config, gop, hdr=False)} ! '
-                f'{codec_caps} ! '
-                f'{codec_parser} ! '
-                f'queue max-size-buffers=30 max-size-time=0 max-size-bytes=0 ! '
-                f'mux. '
+                f'{self._build_video_output(config, video_target)}'
             )
     
     def _build_vdin1_source(
-        self, config: AutoInstanceConfig, gop: int, use_hdr: bool
+        self, config: AutoInstanceConfig, gop: int, use_hdr: bool, video_target: str
     ) -> str:
         """Build Path B: streamboxsrc source=vdin1 pipeline.
         
         Path B auto-detects signal depth.  For 8-bit SDR, outputs NV21
         passthrough.  For 10-bit HDR, Vulkan converts AMLY→P010.
         """
-        codec_caps, codec_parser = self._build_codec_output(config)
         if use_hdr:
             # HDR 10-bit: Vulkan AMLY→P010 conversion
             return (
@@ -280,10 +351,7 @@ class PipelineBuilder:
                 f'framerate={config.framerate}/1 ! '
                 f'queue max-size-buffers=5 max-size-time=0 max-size-bytes=0 ! '
                 f'{self._build_encoder_settings(config, gop, hdr=True)} ! '
-                f'{codec_caps} ! '
-                f'{codec_parser} ! '
-                f'queue max-size-buffers=30 max-size-time=0 max-size-bytes=0 ! '
-                f'mux. '
+                f'{self._build_video_output(config, video_target)}'
             )
         else:
             # SDR 8-bit: NV21 passthrough (no GPU conversion needed)
@@ -293,21 +361,17 @@ class PipelineBuilder:
                 f'framerate={config.framerate}/1 ! '
                 f'queue max-size-buffers=5 max-size-time=0 max-size-bytes=0 ! '
                 f'{self._build_encoder_settings(config, gop, hdr=False)} ! '
-                f'{codec_caps} ! '
-                f'{codec_parser} ! '
-                f'queue max-size-buffers=30 max-size-time=0 max-size-bytes=0 ! '
-                f'mux. '
+                f'{self._build_video_output(config, video_target)}'
             )
     
     def _build_v4l2_legacy_source(
-        self, config: AutoInstanceConfig, gop: int, use_hdr: bool
+        self, config: AutoInstanceConfig, gop: int, use_hdr: bool, video_target: str
     ) -> str:
         """Build Legacy: v4l2src device=/dev/video71 pipeline (deprecated).
         
         Original v4l2 capture path.  Uses ENCODED format for HDR, NV21 for SDR.
         Kept for backward compatibility but deprecated in favor of streamboxsrc.
         """
-        codec_caps, codec_parser = self._build_codec_output(config)
         if use_hdr:
             # HDR 10-bit pipeline: ENCODED format + internal-bit-depth=10 + Vulkan backend
             return (
@@ -317,10 +381,7 @@ class PipelineBuilder:
                 f'videorate ! '
                 f'queue max-size-buffers=5 max-size-time=0 max-size-bytes=0 ! '
                 f'{self._build_encoder_settings(config, gop, hdr=True, legacy_v4l2=True)} ! '
-                f'{codec_caps} ! '
-                f'{codec_parser} ! '
-                f'queue max-size-buffers=30 max-size-time=0 max-size-bytes=0 ! '
-                f'mux. '
+                f'{self._build_video_output(config, video_target)}'
             )
         else:
             # SDR 8-bit pipeline: NV21 format (standard)
@@ -330,10 +391,7 @@ class PipelineBuilder:
                 f'framerate={config.framerate}/1 ! '
                 f'queue max-size-buffers=5 max-size-time=0 max-size-bytes=0 ! '
                 f'{self._build_encoder_settings(config, gop, hdr=False)} ! '
-                f'{codec_caps} ! '
-                f'{codec_parser} ! '
-                f'queue max-size-buffers=30 max-size-time=0 max-size-bytes=0 ! '
-                f'mux. '
+                f'{self._build_video_output(config, video_target)}'
             )
 
     def _build_encoder_settings(
@@ -432,7 +490,9 @@ class AutoInstanceManager:
         lossless_enable=False,
         fixed_qp_value=28,
         audio_source=AudioSource.HDMI_RX,
+        output_transport=OutputTransport.SRT,
         srt_port=8888,
+        srt_wait_for_connection=False,
         recording_enabled=False,
         recording_path="/mnt/sdcard/recordings/capture.ts",
         use_hdr=True,  # Use HDR 10-bit when source is HDR
@@ -985,6 +1045,8 @@ class AutoInstanceManager:
             self.config.gop_interval_seconds = float(updates["gop_interval_seconds"])
         if "output_codec" in updates:
             self.config.output_codec = OutputCodec(updates["output_codec"])
+        if "output_transport" in updates:
+            self.config.output_transport = OutputTransport(updates["output_transport"])
         if "bitrate_kbps" in updates:
             self.config.bitrate_kbps = int(updates["bitrate_kbps"])
         if "rc_mode" in updates:
@@ -999,6 +1061,12 @@ class AutoInstanceManager:
             self.config.audio_source = AudioSource(updates["audio_source"])
         if "srt_port" in updates:
             self.config.srt_port = int(updates["srt_port"])
+        if "srt_wait_for_connection" in updates:
+            self.config.srt_wait_for_connection = bool(updates["srt_wait_for_connection"])
+        if "rtmp_url" in updates:
+            self.config.rtmp_url = updates["rtmp_url"]
+        if "rtsp_url" in updates:
+            self.config.rtsp_url = updates["rtsp_url"]
         if "recording_enabled" in updates:
             self.config.recording_enabled = bool(updates["recording_enabled"])
         if "recording_path" in updates:

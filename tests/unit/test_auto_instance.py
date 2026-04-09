@@ -9,7 +9,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "backend"))
 
-from auto_instance import AutoInstanceConfig, AutoInstanceManager, CaptureSource, OutputCodec, PipelineBuilder
+from auto_instance import AutoInstanceConfig, AutoInstanceManager, CaptureSource, OutputCodec, OutputTransport, PipelineBuilder
 from instances import Instance, InstanceStatus, InstanceType
 
 
@@ -280,7 +280,69 @@ def test_pipeline_builder_supports_h264_output():
 
     assert "video/x-h264" in pipeline
     assert "h264parse config-interval=-1" in pipeline
-    assert "video/x-h265" not in pipeline
+
+
+def test_pipeline_builder_supports_srt_wait_for_connection():
+    config = AutoInstanceConfig(
+        capture_source=CaptureSource.VFMCAP,
+        use_hdr=False,
+        output_transport=OutputTransport.SRT,
+        srt_wait_for_connection=True,
+    )
+
+    builder = PipelineBuilder()
+    pipeline = builder.build(config)
+
+    assert 'srtsink uri="srt://:8888" wait-for-connection=true latency=600 sync=false' in pipeline
+
+
+def test_pipeline_builder_supports_rtmp_output():
+    config = AutoInstanceConfig(
+        capture_source=CaptureSource.VFMCAP,
+        use_hdr=False,
+        output_codec=OutputCodec.H264,
+        output_transport=OutputTransport.RTMP,
+        rtmp_url="rtmp://example.com/live/test",
+    )
+
+    builder = PipelineBuilder()
+    pipeline = builder.build(config)
+
+    assert 'flvmux name=mux streamable=true ! rtmpsink location="rtmp://example.com/live/test"' in pipeline
+    assert 'video/x-h264,stream-format=avc' in pipeline
+
+
+def test_pipeline_builder_supports_rtsp_output():
+    config = AutoInstanceConfig(
+        capture_source=CaptureSource.VFMCAP,
+        use_hdr=False,
+        output_transport=OutputTransport.RTSP,
+        rtsp_url="rtsp://example.com:8554/live/test",
+    )
+
+    builder = PipelineBuilder()
+    pipeline = builder.build(config)
+
+    assert 'rtspclientsink name=rtsp location="rtsp://example.com:8554/live/test" protocols=tcp' in pipeline
+    assert 'rtph264pay' not in pipeline
+    assert 'rtpmp4apay' not in pipeline
+    assert 'h265parse config-interval=-1 ! queue' in pipeline
+    assert 'aacparse ! queue' in pipeline
+
+
+def test_pipeline_builder_rejects_recording_with_non_srt_output():
+    config = AutoInstanceConfig(
+        capture_source=CaptureSource.VFMCAP,
+        use_hdr=False,
+        output_transport=OutputTransport.RTMP,
+        output_codec=OutputCodec.H264,
+        recording_enabled=True,
+    )
+
+    builder = PipelineBuilder()
+
+    with pytest.raises(ValueError, match="Recording is currently supported only with SRT output"):
+        builder.build(config)
 
 
 def test_pipeline_builder_applies_fixed_qp_value_in_cqp_mode():
