@@ -253,12 +253,44 @@
                                 </select>
                             </div>
                             
-                            <h3>Streaming (SRT)</h3>
+                            <h3>Streaming</h3>
                             <div class="gst-form-group">
-                                <label for="auto-srt-port">SRT Port</label>
-                                <input type="number" id="auto-srt-port" class="gst-input" 
-                                       value="8888" min="1024" max="65535">
+                                <label for="auto-output-transport">Output Transport</label>
+                                <select id="auto-output-transport" class="gst-select">
+                                    <option value="srt" selected>SRT</option>
+                                    <option value="rtmp">RTMP</option>
+                                    <option value="rtsp">RTSP</option>
+                                </select>
+                            </div>
+
+                            <div id="auto-srt-group">
+                                <div class="gst-form-group">
+                                    <label for="auto-srt-port">SRT Port</label>
+                                    <input type="number" id="auto-srt-port" class="gst-input" 
+                                           value="8888" min="1024" max="65535">
+                                </div>
+                                <label class="gst-toggle-label">
+                                    <input type="checkbox" id="auto-srt-wait-for-connection">
+                                    <span class="gst-toggle-slider"></span>
+                                    Wait for first client before streaming
+                                </label>
                                 <span class="gst-hint">Stream URL: srt://THIS_IP:PORT</span>
+                            </div>
+
+                            <div id="auto-rtmp-group" class="gst-form-group" style="display: none;">
+                                <label for="auto-rtmp-url">RTMP URL</label>
+                                <input type="text" id="auto-rtmp-url" class="gst-input"
+                                       value="rtmp://127.0.0.1/live/stream"
+                                       placeholder="rtmp://server/live/streamkey">
+                                <span class="gst-hint">RTMP requires H.264 output.</span>
+                            </div>
+
+                            <div id="auto-rtsp-group" class="gst-form-group" style="display: none;">
+                                <label for="auto-rtsp-url">RTSP URL</label>
+                                <input type="text" id="auto-rtsp-url" class="gst-input"
+                                       value="rtsp://127.0.0.1:8554/live/stream"
+                                       placeholder="rtsp://server:8554/live/stream">
+                                <span class="gst-hint">Publishes audio/video to an RTSP server with <code>rtspclientsink</code>.</span>
                             </div>
                             
                             <h3>Recording (MPEG-TS)</h3>

@@ -329,17 +329,25 @@ function updateDetailView() {
         const rows = [
             ['Type', 'Auto-Generated'],
             ['Capture Source', formatCaptureSource(cfg.capture_source)],
+            ['Transport', formatOutputTransport(cfg.output_transport)],
             ['Encoder', formatOutputCodec(cfg.output_codec)],
             ['Bitrate', cfg.lossless_enable ? 'Lossless mode' : `${(cfg.bitrate_kbps / 1000).toFixed(1)} Mbps`],
             ['GOP Interval', `${cfg.gop_interval_seconds}s`],
             ['GOP Preset', formatGopPreset(cfg.gop_pattern)],
             ['RC Mode', cfg.rc_mode === 1 ? 'CBR' : cfg.rc_mode === 0 ? 'VBR' : 'FixQP'],
             ['Lossless', cfg.lossless_enable ? 'Enabled (720p60 or lower)' : 'Disabled'],
-            ['Audio', cfg.audio_source === 'hdmi_rx' ? 'HDMI RX' : 'Line In'],
-            ['SRT Port', `${cfg.srt_port}`],
+            ['Audio', cfg.audio_source === 'hdmi_rx' ? 'HDMI RX' : cfg.audio_source === 'hdmi_rx_direct' ? 'HDMI RX Direct' : 'Line In'],
             ['Debounce', `${cfg.signal_debounce_seconds != null ? cfg.signal_debounce_seconds : 2.0}s`],
             ['Restart Retries', `${cfg.max_restart_retries != null ? cfg.max_restart_retries : 5}`]
         ];
+        if ((cfg.output_transport || 'srt') === 'srt') {
+            rows.push(['SRT Port', `${cfg.srt_port}`]);
+            rows.push(['Wait for Client', cfg.srt_wait_for_connection ? 'Enabled' : 'Disabled']);
+        } else if (cfg.output_transport === 'rtmp') {
+            rows.push(['RTMP URL', cfg.rtmp_url || '-']);
+        } else if (cfg.output_transport === 'rtsp') {
+            rows.push(['RTSP URL', cfg.rtsp_url || '-']);
+        }
         if (cfg.recording_enabled) {
             rows.push(['Recording', cfg.recording_path]);
         }
@@ -660,6 +668,15 @@ function formatGopPreset(pattern) {
 
 function formatOutputCodec(codec) {
     return codec === 'h264' ? 'H.264 / AVC (amlvenc)' : 'H.265 / HEVC (amlvenc)';
+}
+
+function formatOutputTransport(transport) {
+    switch (transport) {
+        case 'rtmp': return 'RTMP';
+        case 'rtsp': return 'RTSP';
+        case 'srt':
+        default: return 'SRT';
+    }
 }
 
 function onHdmiSignalChanged(available, resolution) {

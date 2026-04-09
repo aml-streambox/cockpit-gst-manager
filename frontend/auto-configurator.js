@@ -7,7 +7,7 @@
  * - Single auto instance (creates/replaces)
  * - HDMI TX state monitoring
  * - Pipeline preview with real-time updates
- * - SRT streaming always enabled
+ * - Selectable SRT / RTMP / RTSP streaming output
  * - Optional MPEG-TS recording
  */
 
@@ -30,7 +30,11 @@ class AutoConfigurator {
             lossless_enable: false,
             fixed_qp_value: 28,
             audio_source: 'hdmi_rx',
+            output_transport: 'srt',
             srt_port: 8888,
+            srt_wait_for_connection: false,
+            rtmp_url: 'rtmp://127.0.0.1/live/stream',
+            rtsp_url: 'rtsp://127.0.0.1:8554/live/stream',
             recording_enabled: false,
             recording_path: '/mnt/sdcard/recordings/capture.ts',
             autostart_on_ready: true,
@@ -65,7 +69,8 @@ class AutoConfigurator {
         const inputs = [
             'auto-capture-source', 'auto-gop-interval', 'auto-output-codec', 'auto-bitrate', 'auto-rc-mode',
             'auto-gop-pattern', 'auto-lossless-enable', 'auto-fixed-qp-value',
-            'auto-audio-source', 'auto-srt-port',
+            'auto-audio-source', 'auto-output-transport', 'auto-srt-port',
+            'auto-srt-wait-for-connection', 'auto-rtmp-url', 'auto-rtsp-url',
             'auto-recording-enabled', 'auto-recording-path', 'auto-autostart',
             'auto-use-hdr', 'auto-signal-debounce', 'auto-max-restart-retries',
             'auto-restart-backoff-base', 'auto-restart-backoff-max'
@@ -84,6 +89,14 @@ class AutoConfigurator {
         if (captureSourceEl) {
             captureSourceEl.addEventListener('change', (e) => {
                 this.updateCaptureSourceHint(e.target.value);
+                this.updatePreview();
+            });
+        }
+
+        const outputTransportEl = document.getElementById('auto-output-transport');
+        if (outputTransportEl) {
+            outputTransportEl.addEventListener('change', () => {
+                this.updateTransportUI();
                 this.updatePreview();
             });
         }
@@ -307,11 +320,14 @@ class AutoConfigurator {
         setValue('auto-capture-source', this.config.capture_source || 'vfmcap');
         setValue('auto-gop-interval', this.config.gop_interval_seconds);
         setValue('auto-output-codec', this.config.output_codec || 'h265');
+        setValue('auto-output-transport', this.config.output_transport || 'srt');
         setValue('auto-bitrate', this.config.bitrate_kbps);
         setValue('auto-rc-mode', this.config.rc_mode);
         setValue('auto-gop-pattern', this.config.gop_pattern != null ? this.config.gop_pattern : 0);
         setValue('auto-audio-source', this.config.audio_source);
         setValue('auto-srt-port', this.config.srt_port);
+        setValue('auto-rtmp-url', this.config.rtmp_url || 'rtmp://127.0.0.1/live/stream');
+        setValue('auto-rtsp-url', this.config.rtsp_url || 'rtsp://127.0.0.1:8554/live/stream');
         setValue('auto-recording-path', this.config.recording_path);
         setValue('auto-signal-debounce', this.config.signal_debounce_seconds != null ? this.config.signal_debounce_seconds : 2.0);
         setValue('auto-max-restart-retries', this.config.max_restart_retries != null ? this.config.max_restart_retries : 5);
@@ -321,6 +337,11 @@ class AutoConfigurator {
         const recEnable = document.getElementById('auto-recording-enabled');
         if (recEnable) {
             recEnable.checked = this.config.recording_enabled;
+        }
+
+        const srtWait = document.getElementById('auto-srt-wait-for-connection');
+        if (srtWait) {
+            srtWait.checked = this.config.srt_wait_for_connection === true;
         }
 
         const autostart = document.getElementById('auto-autostart');
@@ -343,6 +364,8 @@ class AutoConfigurator {
         if (pathGroup) {
             pathGroup.style.display = this.config.recording_enabled ? 'block' : 'none';
         }
+
+        this.updateTransportUI();
         
         // Update capture source hint
         this.updateCaptureSourceHint(this.config.capture_source || 'vfmcap');
@@ -385,7 +408,11 @@ class AutoConfigurator {
             lossless_enable: getChecked('auto-lossless-enable'),
             fixed_qp_value: parseInt(getValue('auto-fixed-qp-value', '28')),
             audio_source: getValue('auto-audio-source', 'hdmi_rx'),
+            output_transport: getValue('auto-output-transport', 'srt'),
             srt_port: parseInt(getValue('auto-srt-port', '8888')),
+            srt_wait_for_connection: getChecked('auto-srt-wait-for-connection'),
+            rtmp_url: getValue('auto-rtmp-url', 'rtmp://127.0.0.1/live/stream'),
+            rtsp_url: getValue('auto-rtsp-url', 'rtsp://127.0.0.1:8554/live/stream'),
             recording_enabled: getChecked('auto-recording-enabled'),
             recording_path: getValue('auto-recording-path', '/mnt/sdcard/recordings/capture.ts'),
             autostart_on_ready: getChecked('auto-autostart'),
@@ -657,6 +684,44 @@ class AutoConfigurator {
                 : losslessEnabled
                 ? 'Lossless mode is enabled. Use it only for 720p60 or lower because bitrate and encoder load rise sharply.'
                 : 'Lossless mode is HEVC-only and is intended for archival-quality capture at 720p60 or lower.';
+        }
+    }
+
+    updateTransportUI() {
+        const transport = document.getElementById('auto-output-transport')?.value || 'srt';
+        const codecEl = document.getElementById('auto-output-codec');
+        const codecHint = document.getElementById('auto-hdr-status');
+        const srtGroup = document.getElementById('auto-srt-group');
+        const rtmpGroup = document.getElementById('auto-rtmp-group');
+        const rtspGroup = document.getElementById('auto-rtsp-group');
+        const recordingToggle = document.getElementById('auto-recording-enabled');
+        const recordingPathGroup = document.getElementById('auto-recording-path-group');
+
+        if (srtGroup) srtGroup.style.display = transport === 'srt' ? 'block' : 'none';
+        if (rtmpGroup) rtmpGroup.style.display = transport === 'rtmp' ? 'block' : 'none';
+        if (rtspGroup) rtspGroup.style.display = transport === 'rtsp' ? 'block' : 'none';
+
+        if (codecEl) {
+            const h265Option = Array.from(codecEl.options).find(opt => opt.value === 'h265');
+            if (h265Option) {
+                h265Option.disabled = transport === 'rtmp';
+            }
+            if (transport === 'rtmp' && codecEl.value !== 'h264') {
+                codecEl.value = 'h264';
+            }
+        }
+
+        if (recordingToggle) {
+            if (transport !== 'srt') {
+                recordingToggle.checked = false;
+                recordingToggle.disabled = true;
+            } else {
+                recordingToggle.disabled = false;
+            }
+        }
+
+        if (recordingPathGroup) {
+            recordingPathGroup.style.display = transport === 'srt' && recordingToggle?.checked ? 'block' : 'none';
         }
     }
 }
