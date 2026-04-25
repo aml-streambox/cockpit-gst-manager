@@ -152,6 +152,21 @@
                             <div class="gst-hdr-status" id="auto-hdr-status" style="margin: 8px 0; font-size: 0.85em; color: #888;">
                                 Source: detecting...
                             </div>
+
+                            <div class="gst-form-group">
+                                <label for="auto-color-mode">Color Space Conversion</label>
+                                <select id="auto-color-mode" class="gst-select">
+                                    <option value="passthrough" selected>Passthrough — preserve source colorimetry</option>
+                                    <option value="hdr10_to_sdr">HDR10 → SDR (BT.2020 PQ → BT.709, tone-mapped)</option>
+                                    <option value="hlg_to_sdr">HLG → SDR (BT.2020 HLG → BT.709, tone-mapped)</option>
+                                </select>
+                                <span class="gst-hint">
+                                    Applied inside streamboxsrc via the Vulkan compute shader.
+                                    Non-passthrough modes force 8-bit NV12 output and override the HDR toggle.
+                                    Legacy v4l2 capture does not support conversion and falls back to passthrough.
+                                </span>
+                            </div>
+                            
                             
                             <div class="gst-form-row">
                                 <div class="gst-form-group">

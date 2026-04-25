@@ -132,8 +132,36 @@ if DBUS_LIBRARY == "dbus_next":
 
         @method()
         async def StartInstance(self, instance_id: "s") -> "b":
-            """Start a pipeline instance."""
+            """Start a pipeline instance.
+
+            For AUTO-type instances, refresh the pipeline from the current
+            live HDMI/passthrough signal status before starting so that
+            stale dimensions/framerate from a previously saved instance
+            don't trigger not-negotiated errors.
+            """
             try:
+                # If this is the auto instance, rebuild against live signal first.
+                from instances import InstanceType
+                instance = self.instance_manager.get_instance(instance_id)
+                if (
+                    instance
+                    and instance.instance_type == InstanceType.AUTO
+                    and self.auto_instance_manager
+                    and self.auto_instance_manager.config
+                ):
+                    try:
+                        runtime_status = self.auto_instance_manager._get_runtime_status_for_source()
+                        # Rebuild and persist the auto instance pipeline against live status.
+                        await self.auto_instance_manager.create_or_update(
+                            self.auto_instance_manager.config,
+                            runtime_status,
+                        )
+                        # create_or_update may have replaced the instance id.
+                        new_id = self.auto_instance_manager.instance_id
+                        if new_id:
+                            instance_id = new_id
+                    except Exception as e:
+                        logger.warning(f"Auto-refresh before start failed: {e}")
                 return await self.instance_manager.start_instance(instance_id)
             except ValueError as e:
                 raise DBusError(f"{INTERFACE_NAME}.InstanceNotFound", str(e))
@@ -507,10 +535,15 @@ if DBUS_LIBRARY == "dbus_next":
                 if not self.auto_instance_manager:
                     return False
                 
-                from auto_instance import AutoInstanceConfig, AudioSource, CaptureSource, OutputCodec, OutputTransport
+                from auto_instance import AutoInstanceConfig, AudioSource, CaptureSource, OutputCodec, OutputTransport, ColorMode
                 
                 config_data = json.loads(config_json)
                 
+                try:
+                    color_mode_val = ColorMode(config_data.get("color_mode", "passthrough"))
+                except ValueError:
+                    color_mode_val = ColorMode.PASSTHROUGH
+
                 # Create config object
                 config = AutoInstanceConfig(
                     capture_source=CaptureSource(config_data.get("capture_source", "vfmcap")),
@@ -531,6 +564,7 @@ if DBUS_LIBRARY == "dbus_next":
                     recording_path=config_data.get("recording_path", "/mnt/sdcard/recordings/capture.ts"),
                     autostart_on_ready=config_data.get("autostart_on_ready", True),
                     use_hdr=config_data.get("use_hdr", True),
+                    color_mode=color_mode_val,
                     signal_debounce_seconds=config_data.get("signal_debounce_seconds", 2.0),
                     max_restart_retries=config_data.get("max_restart_retries", 5),
                     restart_backoff_base=config_data.get("restart_backoff_base", 1.0),
@@ -572,9 +606,13 @@ if DBUS_LIBRARY == "dbus_next":
                 Pipeline string with line breaks
             """
             try:
-                from auto_instance import AutoInstanceConfig, PipelineBuilder, AudioSource, CaptureSource, OutputCodec, OutputTransport
+                from auto_instance import AutoInstanceConfig, PipelineBuilder, AudioSource, CaptureSource, OutputCodec, OutputTransport, ColorMode
                 
                 config_data = json.loads(config_json)
+                try:
+                    color_mode_val = ColorMode(config_data.get("color_mode", "passthrough"))
+                except ValueError:
+                    color_mode_val = ColorMode.PASSTHROUGH
                 config = AutoInstanceConfig(
                     capture_source=CaptureSource(config_data.get("capture_source", "vfmcap")),
                     gop_interval_seconds=config_data.get("gop_interval_seconds", 1.0),
@@ -593,6 +631,7 @@ if DBUS_LIBRARY == "dbus_next":
                     recording_enabled=config_data.get("recording_enabled", False),
                     recording_path=config_data.get("recording_path", "/mnt/sdcard/recordings/capture.ts"),
                     use_hdr=config_data.get("use_hdr", True),
+                    color_mode=color_mode_val,
                     signal_debounce_seconds=config_data.get("signal_debounce_seconds", 2.0),
                     max_restart_retries=config_data.get("max_restart_retries", 5),
                     restart_backoff_base=config_data.get("restart_backoff_base", 1.0),

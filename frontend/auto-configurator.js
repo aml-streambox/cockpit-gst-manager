@@ -39,6 +39,7 @@ class AutoConfigurator {
             recording_path: '/mnt/sdcard/recordings/capture.ts',
             autostart_on_ready: true,
             use_hdr: true,
+            color_mode: 'passthrough',
             signal_debounce_seconds: 2.0,
             max_restart_retries: 5,
             restart_backoff_base: 1.0,
@@ -72,7 +73,7 @@ class AutoConfigurator {
             'auto-audio-source', 'auto-output-transport', 'auto-srt-port',
             'auto-rtmp-url', 'auto-rtsp-url',
             'auto-recording-enabled', 'auto-recording-path', 'auto-autostart',
-            'auto-use-hdr', 'auto-signal-debounce', 'auto-max-restart-retries',
+            'auto-use-hdr', 'auto-color-mode', 'auto-signal-debounce', 'auto-max-restart-retries',
             'auto-restart-backoff-base', 'auto-restart-backoff-max'
         ];
         
@@ -349,6 +350,8 @@ class AutoConfigurator {
             useHdr.checked = this.config.use_hdr !== false; // default true
         }
 
+        setValue('auto-color-mode', this.config.color_mode || 'passthrough');
+
         const losslessEnable = document.getElementById('auto-lossless-enable');
         if (losslessEnable) {
             losslessEnable.checked = this.config.lossless_enable === true;
@@ -412,6 +415,7 @@ class AutoConfigurator {
             recording_path: getValue('auto-recording-path', '/mnt/sdcard/recordings/capture.ts'),
             autostart_on_ready: getChecked('auto-autostart'),
             use_hdr: getChecked('auto-use-hdr'),
+            color_mode: getValue('auto-color-mode', 'passthrough'),
             signal_debounce_seconds: parseFloat(getValue('auto-signal-debounce', '2.0')),
             max_restart_retries: parseInt(getValue('auto-max-restart-retries', '5')),
             restart_backoff_base: parseFloat(getValue('auto-restart-backoff-base', '1.0')),

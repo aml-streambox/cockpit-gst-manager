@@ -64,6 +64,44 @@ class OutputTransport(Enum):
     RTSP = "rtsp"
 
 
+class ColorMode(Enum):
+    """Color-space conversion mode applied inside streamboxsrc.
+
+    The underlying streamboxsrc element exposes ``color-mode`` values:
+
+    * ``0`` — passthrough: preserve source colorimetry (HDR stays HDR,
+      SDR stays SDR).
+    * ``1`` — HDR10 → SDR: tone-map BT.2020 PQ input to SDR BT.709
+      (via the Vulkan compute shader). Output is forced to 8-bit NV12
+      and the encoder is configured for SDR.
+    * ``2`` — HLG → SDR: tone-map BT.2020 HLG input to SDR BT.709. Same
+      output constraints as mode 1.
+
+    Modes 1 and 2 only have an effect on Path A (``vfmcap``) and Path B
+    (``vdin1``), both of which run the compute shader. The legacy
+    ``v4l2_legacy`` source cannot perform conversion and silently falls
+    back to passthrough.
+    """
+
+    PASSTHROUGH = "passthrough"
+    HDR10_TO_SDR = "hdr10_to_sdr"
+    HLG_TO_SDR = "hlg_to_sdr"
+
+    @property
+    def streamboxsrc_value(self) -> int:
+        """Return the integer value expected by streamboxsrc color-mode."""
+        return {
+            ColorMode.PASSTHROUGH: 0,
+            ColorMode.HDR10_TO_SDR: 1,
+            ColorMode.HLG_TO_SDR: 2,
+        }[self]
+
+    @property
+    def forces_sdr(self) -> bool:
+        """True if this mode produces SDR (BT.709 8-bit NV12) output."""
+        return self is not ColorMode.PASSTHROUGH
+
+
 @dataclass
 class AutoInstanceConfig:
     """Configuration for auto-generated instance.
@@ -100,6 +138,14 @@ class AutoInstanceConfig:
     
     # HDR mode
     use_hdr: bool = True  # When True and source is HDR 10-bit, use HDR pipeline
+
+    # Color-space conversion mode (applied inside streamboxsrc).
+    #   passthrough   - preserve source colorimetry (default)
+    #   hdr10_to_sdr  - tone-map HDR10 (BT.2020 PQ) -> SDR BT.709
+    #   hlg_to_sdr    - tone-map HLG (BT.2020) -> SDR BT.709
+    # When non-passthrough, the output is forced to 8-bit NV12 and the
+    # encoder is configured for SDR regardless of use_hdr.
+    color_mode: ColorMode = ColorMode.PASSTHROUGH
     
     # Auto-start behavior
     autostart_on_ready: bool = True
@@ -126,6 +172,7 @@ class AutoInstanceConfig:
         data["capture_source"] = self.capture_source.value
         data["output_codec"] = self.output_codec.value
         data["output_transport"] = self.output_transport.value
+        data["color_mode"] = self.color_mode.value
         return data
     
     @classmethod
@@ -139,6 +186,11 @@ class AutoInstanceConfig:
             data["output_codec"] = OutputCodec(data["output_codec"])
         if "output_transport" in data and isinstance(data["output_transport"], str):
             data["output_transport"] = OutputTransport(data["output_transport"])
+        if "color_mode" in data and isinstance(data["color_mode"], str):
+            try:
+                data["color_mode"] = ColorMode(data["color_mode"])
+            except ValueError:
+                data["color_mode"] = ColorMode.PASSTHROUGH
         # Filter out unknown fields
         valid_fields = cls.__dataclass_fields__.keys()
         filtered_data = {k: v for k, v in data.items() if k in valid_fields}
@@ -194,6 +246,12 @@ class PipelineBuilder:
         # Source auto-detection (source_is_hdr / source_color_depth) only
         # matters for the auto-start path in on_passthrough_ready().
         use_hdr_pipeline = config.use_hdr
+
+        # Non-passthrough color conversion tone-maps the source to SDR
+        # BT.709 8-bit NV12 inside streamboxsrc, so the encoder must run
+        # as SDR even if use_hdr was left enabled.
+        if config.color_mode.forces_sdr:
+            use_hdr_pipeline = False
         video_target, audio_target, output_sink = self._build_transport_targets(config)
         
         # Build video source based on capture source selection
@@ -313,13 +371,19 @@ class PipelineBuilder:
         
         Path A always outputs P010_10LE for HDR (Vulkan GPU conversion from
         raw vfm_cap formats).  For SDR, outputs NV12.
+
+        When ``color_mode`` is non-passthrough, the compute shader tone-maps
+        the source to SDR BT.709 8-bit NV12 regardless of use_hdr.
         """
+        color_mode_attr = self._color_mode_attr(config)
+        colorimetry_hint = self._colorimetry_hint(config)
+
         if use_hdr:
             # HDR 10-bit: P010_10LE via Vulkan conversion
             return (
-                f'streamboxsrc source=vfmcap output-format=p010 ! '
+                f'streamboxsrc source=vfmcap output-format=p010{color_mode_attr} ! '
                 f'video/x-raw,format=P010_10LE,width={config.width},height={config.height},'
-                f'framerate={config.framerate}/1 ! '
+                f'framerate={config.framerate}/1{colorimetry_hint} ! '
                 f'queue max-size-buffers=5 max-size-time=0 max-size-bytes=0 ! '
                 f'{self._build_encoder_settings(config, gop, hdr=True)} ! '
                 f'{self._build_video_output(config, video_target)}'
@@ -327,9 +391,9 @@ class PipelineBuilder:
         else:
             # SDR 8-bit: NV12
             return (
-                f'streamboxsrc source=vfmcap output-format=nv12 ! '
+                f'streamboxsrc source=vfmcap output-format=nv12{color_mode_attr} ! '
                 f'video/x-raw,format=NV12,width={config.width},height={config.height},'
-                f'framerate={config.framerate}/1 ! '
+                f'framerate={config.framerate}/1{colorimetry_hint} ! '
                 f'queue max-size-buffers=5 max-size-time=0 max-size-bytes=0 ! '
                 f'{self._build_encoder_settings(config, gop, hdr=False)} ! '
                 f'{self._build_video_output(config, video_target)}'
@@ -342,15 +406,33 @@ class PipelineBuilder:
         
         Path B auto-detects signal depth.  For 8-bit SDR, outputs NV21
         passthrough.  For 10-bit HDR, Vulkan converts AMLY→P010.
+
+        When ``color_mode`` is non-passthrough, the Vulkan shader tone-maps
+        the source to SDR BT.709 8-bit NV12 so we must request NV12 output
+        rather than the NV21 zero-copy path.
         """
+        color_mode_attr = self._color_mode_attr(config)
+        colorimetry_hint = self._colorimetry_hint(config)
+
         if use_hdr:
             # HDR 10-bit: Vulkan AMLY→P010 conversion
             return (
-                f'streamboxsrc source=vdin1 output-format=p010 ! '
+                f'streamboxsrc source=vdin1 output-format=p010{color_mode_attr} ! '
                 f'video/x-raw,format=P010_10LE,width={config.width},height={config.height},'
-                f'framerate={config.framerate}/1 ! '
+                f'framerate={config.framerate}/1{colorimetry_hint} ! '
                 f'queue max-size-buffers=5 max-size-time=0 max-size-bytes=0 ! '
                 f'{self._build_encoder_settings(config, gop, hdr=True)} ! '
+                f'{self._build_video_output(config, video_target)}'
+            )
+        elif config.color_mode.forces_sdr:
+            # SDR via Vulkan tone-map: NV12 (not NV21 zero-copy) so the
+            # shader output reaches downstream.
+            return (
+                f'streamboxsrc source=vdin1 output-format=nv12{color_mode_attr} ! '
+                f'video/x-raw,format=NV12,width={config.width},height={config.height},'
+                f'framerate={config.framerate}/1{colorimetry_hint} ! '
+                f'queue max-size-buffers=5 max-size-time=0 max-size-bytes=0 ! '
+                f'{self._build_encoder_settings(config, gop, hdr=False)} ! '
                 f'{self._build_video_output(config, video_target)}'
             )
         else:
@@ -363,6 +445,27 @@ class PipelineBuilder:
                 f'{self._build_encoder_settings(config, gop, hdr=False)} ! '
                 f'{self._build_video_output(config, video_target)}'
             )
+
+    @staticmethod
+    def _color_mode_attr(config: AutoInstanceConfig) -> str:
+        """Return `` color-mode=N`` suffix when a non-default mode is selected."""
+        value = config.color_mode.streamboxsrc_value
+        if value == 0:
+            return ""
+        return f" color-mode={value}"
+
+    @staticmethod
+    def _colorimetry_hint(config: AutoInstanceConfig) -> str:
+        """Append a ``colorimetry=`` field to caps when forcing SDR output.
+
+        streamboxsrc already retags its caps when color-mode!=0, but including
+        the hint in the capsfilter keeps the negotiation intent explicit in
+        the generated pipeline and helps downstream muxers describe the
+        stream correctly.
+        """
+        if config.color_mode.forces_sdr:
+            return ",colorimetry=bt709"
+        return ""
     
     def _build_v4l2_legacy_source(
         self, config: AutoInstanceConfig, gop: int, use_hdr: bool, video_target: str
@@ -595,7 +698,12 @@ class AutoInstanceManager:
         """
         self._prepare_recording_path(config)
         self._apply_runtime_status_to_config(config, runtime_status)
-        
+
+        # Always sync runtime fields (HDR/color depth/RX dims when applicable)
+        # from the live event-manager status so the saved pipeline reflects
+        # the current signal even if no explicit runtime_status was supplied.
+        self._apply_event_manager_status(config)
+
         # Update HDR info from event manager's RX status
         if self.event_manager:
             rx_status = self.event_manager.get_hdmi_status()
