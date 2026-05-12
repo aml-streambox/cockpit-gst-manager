@@ -520,7 +520,7 @@ if DBUS_LIBRARY == "dbus_next":
                     - rtmp_url: str
                     - rtsp_url: str
                     - recording_enabled: bool
-                    - recording_path: str
+                    - recording_path: str directory for auto-generated YYYYMMDDSS.ts recordings, or full file path
                     - autostart_on_ready: bool
                     - use_hdr: bool
                     - signal_debounce_seconds: float
@@ -561,7 +561,7 @@ if DBUS_LIBRARY == "dbus_next":
                     rtmp_url=config_data.get("rtmp_url", "rtmp://127.0.0.1/live/stream"),
                     rtsp_url=config_data.get("rtsp_url", "rtsp://127.0.0.1:8554/live/stream"),
                     recording_enabled=config_data.get("recording_enabled", False),
-                    recording_path=config_data.get("recording_path", "/mnt/sdcard/recordings/capture.ts"),
+                    recording_path=config_data.get("recording_path", "/mnt/sdcard/recordings/"),
                     autostart_on_ready=config_data.get("autostart_on_ready", True),
                     use_hdr=config_data.get("use_hdr", True),
                     color_mode=color_mode_val,
@@ -629,7 +629,7 @@ if DBUS_LIBRARY == "dbus_next":
                     rtmp_url=config_data.get("rtmp_url", "rtmp://127.0.0.1/live/stream"),
                     rtsp_url=config_data.get("rtsp_url", "rtsp://127.0.0.1:8554/live/stream"),
                     recording_enabled=config_data.get("recording_enabled", False),
-                    recording_path=config_data.get("recording_path", "/mnt/sdcard/recordings/capture.ts"),
+                    recording_path=config_data.get("recording_path", "/mnt/sdcard/recordings/"),
                     use_hdr=config_data.get("use_hdr", True),
                     color_mode=color_mode_val,
                     signal_debounce_seconds=config_data.get("signal_debounce_seconds", 2.0),

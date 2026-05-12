@@ -217,7 +217,7 @@ def test_prepare_recording_path_appends_timestamp_filename_for_directory(tmp_pat
     )
 
     manager = AutoInstanceManager(instance_manager, event_manager=DummyEventManager())
-    monkeypatch.setattr("auto_instance.time.strftime", lambda *_args, **_kwargs: "20260403-173000")
+    monkeypatch.setattr("auto_instance.time.strftime", lambda *_args, **_kwargs: "2026040330")
     config = AutoInstanceConfig(
         recording_enabled=False,
         recording_path=str(tmp_path / "captures") + "/",
@@ -225,7 +225,22 @@ def test_prepare_recording_path_appends_timestamp_filename_for_directory(tmp_pat
 
     manager._prepare_recording_path(config)
 
-    assert config.recording_path.endswith("captures/capture-20260403-173000.ts")
+    assert config.recording_path.endswith("captures/2026040330.ts")
+
+
+def test_pipeline_builder_resolves_recording_directory_for_preview(tmp_path, monkeypatch):
+    monkeypatch.setattr("auto_instance.time.strftime", lambda *_args, **_kwargs: "2026040330")
+    config = AutoInstanceConfig(
+        capture_source=CaptureSource.VFMCAP,
+        use_hdr=False,
+        recording_enabled=True,
+        recording_path=str(tmp_path / "captures") + "/",
+    )
+
+    builder = PipelineBuilder()
+    pipeline = builder.build(config)
+
+    assert f'filesink location="{tmp_path}/captures/2026040330.ts"' in pipeline
 
 
 def test_pipeline_builder_applies_gop_preset():

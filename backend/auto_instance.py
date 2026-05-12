@@ -28,6 +28,23 @@ from instances import InstanceStatus
 logger = logging.getLogger("gst-manager.auto_instance")
 
 _AMLVENC_QP_PROPERTY_CACHE: Optional[bool] = None
+DEFAULT_RECORDING_DIRECTORY = "/mnt/sdcard/recordings/"
+
+
+def _resolve_recording_file_path(recording_path: str) -> Path:
+    """Return a concrete MPEG-TS recording file path.
+
+    Directory-style values are expanded to YYYYMMDDSS.ts so users only need
+    to choose where recordings should be saved.
+    """
+    normalized = (recording_path or "").strip() or DEFAULT_RECORDING_DIRECTORY
+    path = Path(normalized).expanduser()
+
+    if normalized.endswith("/") or path.suffix == "":
+        timestamp = time.strftime("%Y%m%d%S", time.localtime())
+        path = path / f"{timestamp}.ts"
+
+    return path
 
 
 class CaptureSource(Enum):
@@ -134,7 +151,7 @@ class AutoInstanceConfig:
     
     # Recording (optional)
     recording_enabled: bool = False
-    recording_path: str = "/mnt/sdcard/recordings/capture.ts"
+    recording_path: str = DEFAULT_RECORDING_DIRECTORY
     
     # HDR mode
     use_hdr: bool = True  # When True and source is HDR 10-bit, use HDR pipeline
@@ -280,15 +297,16 @@ class PipelineBuilder:
             raise ValueError("Recording is currently supported only with SRT output")
 
         if config.output_transport == OutputTransport.SRT:
-            wait = "false"
+            wait = "true" if config.srt_wait_for_connection else "false"
             sink = (
                 'mpegtsmux name=mux alignment=7 latency=100000000 '
                 'pat-interval=1800 pmt-interval=1800'
             )
             if config.recording_enabled:
+                recording_path = _resolve_recording_file_path(config.recording_path)
                 sink += (
                     f' ! tee name=t '
-                    f't. ! queue ! filesink location="{config.recording_path}" '
+                    f't. ! queue ! filesink location="{recording_path}" '
                     f't. ! queue ! srtsink uri="srt://:{config.srt_port}" '
                     f'wait-for-connection={wait} latency=600 sync=false'
                 )
@@ -597,12 +615,12 @@ class AutoInstanceManager:
         srt_port=8888,
         srt_wait_for_connection=False,
         recording_enabled=False,
-        recording_path="/mnt/sdcard/recordings/capture.ts",
+        recording_path=DEFAULT_RECORDING_DIRECTORY,
         use_hdr=True,  # Use HDR 10-bit when source is HDR
         autostart_on_ready=True  # Key: auto-start when HDMI ready
     )
 
-    DEFAULT_RECORDING_PATH = "/mnt/sdcard/recordings/"
+    DEFAULT_RECORDING_PATH = DEFAULT_RECORDING_DIRECTORY
     
     def __init__(self, instance_manager, event_manager=None):
         """Initialize auto instance manager.
@@ -1204,13 +1222,7 @@ class AutoInstanceManager:
 
     def _prepare_recording_path(self, config: AutoInstanceConfig) -> None:
         """Normalize recording path and create parent directory when needed."""
-        normalized = (config.recording_path or "").strip() or self.DEFAULT_RECORDING_PATH
-        path = Path(normalized).expanduser()
-
-        if normalized.endswith("/") or path.suffix == "":
-            timestamp = time.strftime("%Y%m%d-%H%M%S", time.localtime())
-            path = path / f"capture-{timestamp}.ts"
-
+        path = _resolve_recording_file_path(config.recording_path)
         config.recording_path = str(path)
 
         if not config.recording_enabled:
