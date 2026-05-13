@@ -520,7 +520,8 @@ if DBUS_LIBRARY == "dbus_next":
                     - rtmp_url: str
                     - rtsp_url: str
                     - recording_enabled: bool
-                    - recording_path: str directory for auto-generated YYYYMMDDSS.ts recordings, or full file path
+                    - recording_path: str directory for generated MPEG-TS recordings
+                    - recording_prefix: optional filename prefix for generated recordings
                     - autostart_on_ready: bool
                     - use_hdr: bool
                     - signal_debounce_seconds: float
@@ -562,6 +563,7 @@ if DBUS_LIBRARY == "dbus_next":
                     rtsp_url=config_data.get("rtsp_url", "rtsp://127.0.0.1:8554/live/stream"),
                     recording_enabled=config_data.get("recording_enabled", False),
                     recording_path=config_data.get("recording_path", "/mnt/sdcard/recordings/"),
+                    recording_prefix=config_data.get("recording_prefix", ""),
                     autostart_on_ready=config_data.get("autostart_on_ready", True),
                     use_hdr=config_data.get("use_hdr", True),
                     color_mode=color_mode_val,
@@ -630,6 +632,7 @@ if DBUS_LIBRARY == "dbus_next":
                     rtsp_url=config_data.get("rtsp_url", "rtsp://127.0.0.1:8554/live/stream"),
                     recording_enabled=config_data.get("recording_enabled", False),
                     recording_path=config_data.get("recording_path", "/mnt/sdcard/recordings/"),
+                    recording_prefix=config_data.get("recording_prefix", ""),
                     use_hdr=config_data.get("use_hdr", True),
                     color_mode=color_mode_val,
                     signal_debounce_seconds=config_data.get("signal_debounce_seconds", 2.0),

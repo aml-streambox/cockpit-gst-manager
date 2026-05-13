@@ -7,7 +7,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "backend"))
 
-from uvc_utils import FrameSize, UVCDevice, UVCPipelineBuilder, VideoFormat
+from uvc_utils import FrameSize, UVCDevice, UVCDiscovery, UVCPipelineBuilder, VideoFormat
 
 
 def make_device() -> UVCDevice:
@@ -132,3 +132,27 @@ def test_rtmp_requires_h264_encoding():
             output_type="rtmp",
             output_config={"url": "rtmp://localhost/live/test"},
         )
+
+
+def test_uvc_discovery_filters_non_usb_video_nodes_before_query(monkeypatch):
+    discovery = UVCDiscovery()
+
+    monkeypatch.setattr("uvc_utils.os.path.exists", lambda path: True)
+    monkeypatch.setattr(
+        "uvc_utils.os.path.realpath",
+        lambda path: "/sys/devices/platform/vfm_cap/video4linux/video0"
+    )
+
+    assert discovery._is_usb_video_device("/dev/video0") is False
+
+
+def test_uvc_discovery_accepts_usb_video_nodes_before_query(monkeypatch):
+    discovery = UVCDiscovery()
+
+    monkeypatch.setattr("uvc_utils.os.path.exists", lambda path: True)
+    monkeypatch.setattr(
+        "uvc_utils.os.path.realpath",
+        lambda path: "/sys/devices/platform/soc/usb1/1-1/video4linux/video2"
+    )
+
+    assert discovery._is_usb_video_device("/dev/video2") is True

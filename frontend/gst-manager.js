@@ -349,7 +349,10 @@ function updateDetailView() {
             rows.push(['RTSP URL', cfg.rtsp_url || '-']);
         }
         if (cfg.recording_enabled) {
-            rows.push(['Recording', cfg.recording_path]);
+            rows.push(['Recording Directory', cfg.recording_path]);
+            if (cfg.recording_prefix) {
+                rows.push(['Recording Prefix', cfg.recording_prefix]);
+            }
         }
         if (cfg.rc_mode === 2) {
             rows.push(['Fixed QP', `${cfg.fixed_qp_value != null ? cfg.fixed_qp_value : 28}`]);

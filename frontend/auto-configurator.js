@@ -37,6 +37,7 @@ class AutoConfigurator {
             rtsp_url: 'rtsp://127.0.0.1:8554/live/stream',
             recording_enabled: false,
             recording_path: '/mnt/sdcard/recordings/',
+            recording_prefix: '',
             autostart_on_ready: true,
             use_hdr: true,
             color_mode: 'passthrough',
@@ -72,7 +73,7 @@ class AutoConfigurator {
             'auto-gop-pattern', 'auto-lossless-enable', 'auto-fixed-qp-value',
             'auto-audio-source', 'auto-output-transport', 'auto-srt-port',
             'auto-rtmp-url', 'auto-rtsp-url',
-            'auto-recording-enabled', 'auto-recording-path', 'auto-autostart',
+            'auto-recording-enabled', 'auto-recording-path', 'auto-recording-prefix', 'auto-autostart',
             'auto-use-hdr', 'auto-color-mode', 'auto-signal-debounce', 'auto-max-restart-retries',
             'auto-restart-backoff-base', 'auto-restart-backoff-max'
         ];
@@ -330,6 +331,7 @@ class AutoConfigurator {
         setValue('auto-rtmp-url', this.config.rtmp_url || 'rtmp://127.0.0.1/live/stream');
         setValue('auto-rtsp-url', this.config.rtsp_url || 'rtsp://127.0.0.1:8554/live/stream');
         setValue('auto-recording-path', this.config.recording_path);
+        setValue('auto-recording-prefix', this.config.recording_prefix || '');
         setValue('auto-signal-debounce', this.config.signal_debounce_seconds != null ? this.config.signal_debounce_seconds : 2.0);
         setValue('auto-max-restart-retries', this.config.max_restart_retries != null ? this.config.max_restart_retries : 5);
         setValue('auto-restart-backoff-base', this.config.restart_backoff_base != null ? this.config.restart_backoff_base : 1.0);
@@ -413,6 +415,7 @@ class AutoConfigurator {
             rtsp_url: getValue('auto-rtsp-url', 'rtsp://127.0.0.1:8554/live/stream'),
             recording_enabled: getChecked('auto-recording-enabled'),
             recording_path: getValue('auto-recording-path', '/mnt/sdcard/recordings/'),
+            recording_prefix: getValue('auto-recording-prefix', ''),
             autostart_on_ready: getChecked('auto-autostart'),
             use_hdr: getChecked('auto-use-hdr'),
             color_mode: getValue('auto-color-mode', 'passthrough'),

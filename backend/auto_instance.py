@@ -31,20 +31,30 @@ _AMLVENC_QP_PROPERTY_CACHE: Optional[bool] = None
 DEFAULT_RECORDING_DIRECTORY = "/mnt/sdcard/recordings/"
 
 
-def _resolve_recording_file_path(recording_path: str) -> Path:
+def _normalize_recording_directory(recording_path: str) -> Path:
+    """Return the directory where auto recordings should be saved."""
+    normalized = (recording_path or "").strip() or DEFAULT_RECORDING_DIRECTORY
+    return Path(normalized).expanduser()
+
+
+def _sanitize_recording_prefix(recording_prefix: str) -> str:
+    """Return a filename-safe prefix fragment."""
+    prefix = (recording_prefix or "").strip()
+    return "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in prefix).strip("_")
+
+
+def _resolve_recording_file_path(recording_path: str, recording_prefix: str = "") -> Path:
     """Return a concrete MPEG-TS recording file path.
 
-    Directory-style values are expanded to YYYYMMDDSS.ts so users only need
-    to choose where recordings should be saved.
+    The configured recording path is always treated as a directory. Files are
+    named YYYYMMDDSS.ts, optionally prefixed as <prefix>-YYYYMMDDSS.ts.
     """
-    normalized = (recording_path or "").strip() or DEFAULT_RECORDING_DIRECTORY
-    path = Path(normalized).expanduser()
+    directory = _normalize_recording_directory(recording_path)
+    timestamp = time.strftime("%Y%m%d%S", time.localtime())
+    prefix = _sanitize_recording_prefix(recording_prefix)
+    filename = f"{prefix}-{timestamp}.ts" if prefix else f"{timestamp}.ts"
 
-    if normalized.endswith("/") or path.suffix == "":
-        timestamp = time.strftime("%Y%m%d%S", time.localtime())
-        path = path / f"{timestamp}.ts"
-
-    return path
+    return directory / filename
 
 
 class CaptureSource(Enum):
@@ -152,6 +162,7 @@ class AutoInstanceConfig:
     # Recording (optional)
     recording_enabled: bool = False
     recording_path: str = DEFAULT_RECORDING_DIRECTORY
+    recording_prefix: str = ""
     
     # HDR mode
     use_hdr: bool = True  # When True and source is HDR 10-bit, use HDR pipeline
@@ -195,6 +206,12 @@ class AutoInstanceConfig:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "AutoInstanceConfig":
         """Create config from dictionary."""
+        data = dict(data)
+        if "recording_path" in data:
+            recording_path = Path(str(data["recording_path"])).expanduser()
+            if recording_path.suffix.lower() == ".ts":
+                data["recording_path"] = str(recording_path.parent)
+                data.setdefault("recording_prefix", recording_path.stem)
         if "audio_source" in data and isinstance(data["audio_source"], str):
             data["audio_source"] = AudioSource(data["audio_source"])
         if "capture_source" in data and isinstance(data["capture_source"], str):
@@ -303,7 +320,10 @@ class PipelineBuilder:
                 'pat-interval=1800 pmt-interval=1800'
             )
             if config.recording_enabled:
-                recording_path = _resolve_recording_file_path(config.recording_path)
+                recording_path = _resolve_recording_file_path(
+                    config.recording_path,
+                    config.recording_prefix,
+                )
                 sink += (
                     f' ! tee name=t '
                     f't. ! queue ! filesink location="{recording_path}" '
@@ -616,6 +636,7 @@ class AutoInstanceManager:
         srt_wait_for_connection=False,
         recording_enabled=False,
         recording_path=DEFAULT_RECORDING_DIRECTORY,
+        recording_prefix="",
         use_hdr=True,  # Use HDR 10-bit when source is HDR
         autostart_on_ready=True  # Key: auto-start when HDMI ready
     )
@@ -834,16 +855,12 @@ class AutoInstanceManager:
             return
 
         logger.warning(
-            "Auto instance %s exited unexpectedly (code=%s), scheduling retry",
+            "Auto instance %s exited unexpectedly (code=%s), waiting for next signal event",
             exit_info.instance_id,
             exit_info.exit_code,
         )
-        self._schedule_restart(
-            reason="process-exit",
-            signal_info=None,
-            attempt=0,
-            use_debounce=False,
-        )
+        self._cancel_restart_task()
+        await self._mark_waiting_for_signal("pipeline exited; waiting for next signal event")
 
     async def _ensure_auto_instance_running(
         self,
@@ -1197,6 +1214,8 @@ class AutoInstanceManager:
             self.config.recording_enabled = bool(updates["recording_enabled"])
         if "recording_path" in updates:
             self.config.recording_path = updates["recording_path"]
+        if "recording_prefix" in updates:
+            self.config.recording_prefix = updates["recording_prefix"]
         self._prepare_recording_path(self.config)
         if "autostart_on_ready" in updates:
             self.config.autostart_on_ready = bool(updates["autostart_on_ready"])
@@ -1221,17 +1240,18 @@ class AutoInstanceManager:
         return True
 
     def _prepare_recording_path(self, config: AutoInstanceConfig) -> None:
-        """Normalize recording path and create parent directory when needed."""
-        path = _resolve_recording_file_path(config.recording_path)
-        config.recording_path = str(path)
+        """Normalize recording directory and create it when needed."""
+        directory = _normalize_recording_directory(config.recording_path)
+        config.recording_path = str(directory)
+        config.recording_prefix = _sanitize_recording_prefix(config.recording_prefix)
 
         if not config.recording_enabled:
             return
 
         try:
-            path.parent.mkdir(parents=True, exist_ok=True)
+            directory.mkdir(parents=True, exist_ok=True)
         except Exception as e:
-            logger.warning("Failed to prepare recording directory %s: %s", path.parent, e)
+            logger.warning("Failed to prepare recording directory %s: %s", directory, e)
     
     async def delete(self) -> bool:
         """Delete the auto instance and config.

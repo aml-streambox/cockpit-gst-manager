@@ -313,7 +313,11 @@
                                 <label for="auto-recording-path">Recording Directory</label>
                                 <input type="text" id="auto-recording-path" class="gst-input" 
                                        placeholder="/mnt/sdcard/recordings/">
-                                <span class="gst-hint">Enter a directory. Recordings are saved as timestamped MPEG-TS files like <code>2026040330.ts</code>.</span>
+                                <span class="gst-hint">Enter a directory. Recordings are saved as timestamped MPEG-TS files.</span>
+                                <label for="auto-recording-prefix">Filename Prefix</label>
+                                <input type="text" id="auto-recording-prefix" class="gst-input"
+                                       placeholder="optional-prefix">
+                                <span class="gst-hint">Optional. Files are named like <code>prefix-2026040330.ts</code>, or <code>2026040330.ts</code> without a prefix.</span>
                             </div>
                             
                             <h3>Auto-Start</h3>

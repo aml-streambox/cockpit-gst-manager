@@ -182,6 +182,40 @@ async def test_hdmi_signal_ready_starts_vfmcap_without_tx_dependency(no_sleep):
     instance_manager.start_instance.assert_awaited_once_with("auto1234")
 
 
+@pytest.mark.asyncio
+async def test_unexpected_auto_exit_waits_for_signal_instead_of_retrying():
+    history = SimpleNamespace(save_instance=AsyncMock())
+    instance_manager = SimpleNamespace(
+        add_exit_callback=Mock(),
+        set_instance_status=AsyncMock(),
+        history_manager=history,
+    )
+
+    manager = AutoInstanceManager(instance_manager, event_manager=DummyEventManager())
+    manager.config = AutoInstanceConfig(
+        capture_source=CaptureSource.VFMCAP,
+        autostart_on_ready=True,
+    )
+    manager.instance_id = "auto1234"
+    manager._schedule_restart = Mock()
+
+    exit_info = SimpleNamespace(
+        instance_id="auto1234",
+        intentional=False,
+        signal_change=None,
+        exit_code=1,
+    )
+
+    await manager.on_instance_exit(exit_info)
+
+    manager._schedule_restart.assert_not_called()
+    instance_manager.set_instance_status.assert_awaited_once_with(
+        "auto1234",
+        InstanceStatus.WAITING_SIGNAL,
+        error_message="pipeline exited; waiting for next signal event",
+    )
+
+
 def test_prepare_recording_path_creates_parent_dir(tmp_path):
     history = SimpleNamespace(save_instance=AsyncMock())
     instance_manager = SimpleNamespace(
@@ -196,16 +230,16 @@ def test_prepare_recording_path_creates_parent_dir(tmp_path):
     manager = AutoInstanceManager(instance_manager, event_manager=DummyEventManager())
     config = AutoInstanceConfig(
         recording_enabled=True,
-        recording_path=str(tmp_path / "captures" / "session01.ts"),
+        recording_path=str(tmp_path / "captures"),
     )
 
     manager._prepare_recording_path(config)
 
-    assert config.recording_path.endswith("session01.ts")
+    assert config.recording_path.endswith("captures")
     assert (tmp_path / "captures").is_dir()
 
 
-def test_prepare_recording_path_appends_timestamp_filename_for_directory(tmp_path, monkeypatch):
+def test_prepare_recording_path_keeps_directory_in_config(tmp_path):
     history = SimpleNamespace(save_instance=AsyncMock())
     instance_manager = SimpleNamespace(
         get_instance=Mock(),
@@ -217,15 +251,25 @@ def test_prepare_recording_path_appends_timestamp_filename_for_directory(tmp_pat
     )
 
     manager = AutoInstanceManager(instance_manager, event_manager=DummyEventManager())
-    monkeypatch.setattr("auto_instance.time.strftime", lambda *_args, **_kwargs: "2026040330")
     config = AutoInstanceConfig(
         recording_enabled=False,
         recording_path=str(tmp_path / "captures") + "/",
+        recording_prefix="event clip",
     )
 
     manager._prepare_recording_path(config)
 
-    assert config.recording_path.endswith("captures/2026040330.ts")
+    assert config.recording_path.endswith("captures")
+    assert config.recording_prefix == "event_clip"
+
+
+def test_config_migrates_old_recording_file_path_to_directory_and_prefix(tmp_path):
+    config = AutoInstanceConfig.from_dict({
+        "recording_path": str(tmp_path / "captures" / "session01.ts"),
+    })
+
+    assert config.recording_path == str(tmp_path / "captures")
+    assert config.recording_prefix == "session01"
 
 
 def test_pipeline_builder_resolves_recording_directory_for_preview(tmp_path, monkeypatch):
@@ -235,12 +279,13 @@ def test_pipeline_builder_resolves_recording_directory_for_preview(tmp_path, mon
         use_hdr=False,
         recording_enabled=True,
         recording_path=str(tmp_path / "captures") + "/",
+        recording_prefix="event clip",
     )
 
     builder = PipelineBuilder()
     pipeline = builder.build(config)
 
-    assert f'filesink location="{tmp_path}/captures/2026040330.ts"' in pipeline
+    assert f'filesink location="{tmp_path}/captures/event_clip-2026040330.ts"' in pipeline
 
 
 def test_pipeline_builder_applies_gop_preset():

@@ -203,10 +203,40 @@ class UVCDiscovery:
         # Look for /dev/video* nodes
         for i in range(32):  # Check first 32 video devices
             device_path = f"/dev/video{i}"
-            if os.path.exists(device_path):
+            if os.path.exists(device_path) and self._is_usb_video_device(device_path):
                 devices.append(device_path)
         
         return devices
+
+    def _is_usb_video_device(self, device_path: str) -> bool:
+        """Return True when a video node belongs to USB/UVC hardware.
+
+        The target also exposes Amlogic HDMI/vfm/vdec V4L2 nodes as
+        /dev/video*. Opening those just to check for UVC devices disturbs the
+        active capture pipeline and floods dmesg, so filter using sysfs before
+        any V4L2 ioctl or v4l2-ctl call.
+        """
+        device_name = os.path.basename(device_path)
+        video_sysfs = f"/sys/class/video4linux/{device_name}/device"
+
+        try:
+            real_device_path = os.path.realpath(video_sysfs)
+        except Exception:
+            return False
+
+        if not real_device_path or not os.path.exists(real_device_path):
+            return False
+
+        if "/usb" in real_device_path or "/usb" in f"{real_device_path}/":
+            return True
+
+        driver_link = os.path.join(real_device_path, "driver")
+        try:
+            driver_name = os.path.basename(os.path.realpath(driver_link)).lower()
+        except Exception:
+            driver_name = ""
+
+        return driver_name == "uvcvideo"
     
     async def _get_device_info(self, device_path: str) -> Optional[UVCDevice]:
         """Get detailed information about a video device.
