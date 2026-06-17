@@ -273,7 +273,8 @@
                                 <label for="auto-output-transport">Output Transport</label>
                                 <select id="auto-output-transport" class="gst-select">
                                     <option value="srt" selected>SRT</option>
-                                    <option value="rtmp">RTMP</option>
+                                    <option value="rtmp">RTMP (legacy)</option>
+                                    <option value="rtmp_streambox">RTMP (StreamBox, experimental)</option>
                                     <option value="rtsp">RTSP</option>
                                 </select>
                             </div>
@@ -292,7 +293,7 @@
                                 <input type="text" id="auto-rtmp-url" class="gst-input"
                                        value="rtmp://127.0.0.1/live/stream"
                                        placeholder="rtmp://server/live/streamkey">
-                                <span class="gst-hint">RTMP requires H.264 output.</span>
+                                <span id="auto-rtmp-hint" class="gst-hint">RTMP legacy requires H.264 output.</span>
                             </div>
 
                             <div id="auto-rtsp-group" class="gst-form-group" style="display: none;">

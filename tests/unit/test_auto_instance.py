@@ -369,7 +369,41 @@ def test_pipeline_builder_supports_rtmp_output():
     pipeline = builder.build(config)
 
     assert 'flvmux name=mux streamable=true ! rtmpsink location="rtmp://example.com/live/test"' in pipeline
-    assert 'video/x-h264,stream-format=avc' in pipeline
+    assert 'video/x-h264,stream-format=avc,alignment=au' in pipeline
+
+
+def test_pipeline_builder_supports_streambox_rtmp_h265_output():
+    config = AutoInstanceConfig(
+        capture_source=CaptureSource.VFMCAP,
+        use_hdr=True,
+        output_codec=OutputCodec.H265,
+        output_transport=OutputTransport.RTMP_STREAMBOX,
+        rtmp_url="rtmp://example.com/live/test",
+    )
+
+    builder = PipelineBuilder()
+    pipeline = builder.build(config)
+
+    assert (
+        'sflvmux name=mux streamable=true ! srtmpsink '
+        'location="rtmp://example.com/live/test" sync=false enhanced-codecs="hvc1"'
+    ) in pipeline
+    assert 'video/x-h265,stream-format=hvc1,alignment=au' in pipeline
+
+
+def test_pipeline_builder_rejects_legacy_rtmp_h265_output():
+    config = AutoInstanceConfig(
+        capture_source=CaptureSource.VFMCAP,
+        use_hdr=True,
+        output_codec=OutputCodec.H265,
+        output_transport=OutputTransport.RTMP,
+        rtmp_url="rtmp://example.com/live/test",
+    )
+
+    builder = PipelineBuilder()
+
+    with pytest.raises(ValueError, match="RTMP legacy output requires H.264 codec"):
+        builder.build(config)
 
 
 def test_pipeline_builder_supports_rtsp_output():

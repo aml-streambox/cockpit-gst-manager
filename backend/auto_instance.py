@@ -88,6 +88,7 @@ class OutputTransport(Enum):
 
     SRT = "srt"
     RTMP = "rtmp"
+    RTMP_STREAMBOX = "rtmp_streambox"
     RTSP = "rtsp"
 
 
@@ -339,10 +340,21 @@ class PipelineBuilder:
 
         if config.output_transport == OutputTransport.RTMP:
             if config.output_codec != OutputCodec.H264:
-                raise ValueError("RTMP output requires H.264 codec")
+                raise ValueError("RTMP legacy output requires H.264 codec")
             sink = (
                 'flvmux name=mux streamable=true '
                 f'! rtmpsink location="{config.rtmp_url}"'
+            )
+            return ("mux.", "mux.", sink)
+
+        if config.output_transport == OutputTransport.RTMP_STREAMBOX:
+            enhanced_codecs = (
+                ' enhanced-codecs="hvc1"'
+                if config.output_codec == OutputCodec.H265 else ''
+            )
+            sink = (
+                'sflvmux name=mux streamable=true '
+                f'! srtmpsink location="{config.rtmp_url}" sync=false{enhanced_codecs}'
             )
             return ("mux.", "mux.", sink)
 
@@ -364,10 +376,16 @@ class PipelineBuilder:
                 f'queue max-size-buffers=30 max-size-time=0 max-size-bytes=0 ! {target} '
             )
 
-        if config.output_transport == OutputTransport.RTMP:
+        if config.output_transport in (OutputTransport.RTMP, OutputTransport.RTMP_STREAMBOX):
+            if config.output_codec == OutputCodec.H264:
+                return (
+                    'video/x-h264 ! h264parse config-interval=-1 ! '
+                    'video/x-h264,stream-format=avc,alignment=au ! '
+                    f'queue max-size-buffers=30 max-size-time=0 max-size-bytes=0 ! {target} '
+                )
             return (
-                'video/x-h264 ! h264parse config-interval=-1 ! '
-                'video/x-h264,stream-format=avc ! '
+                'video/x-h265 ! h265parse config-interval=-1 ! '
+                'video/x-h265,stream-format=hvc1,alignment=au ! '
                 f'queue max-size-buffers=30 max-size-time=0 max-size-bytes=0 ! {target} '
             )
 
@@ -390,7 +408,7 @@ class PipelineBuilder:
                 f'queue max-size-buffers=0 max-size-time=500000000 max-size-bytes=0 ! {target}'
             )
 
-        if config.output_transport == OutputTransport.RTMP:
+        if config.output_transport in (OutputTransport.RTMP, OutputTransport.RTMP_STREAMBOX):
             return (
                 'audioconvert ! audioresample ! avenc_aac bitrate=128000 ! '
                 'aacparse ! audio/mpeg,mpegversion=4,stream-format=raw ! '

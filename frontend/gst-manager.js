@@ -343,7 +343,7 @@ function updateDetailView() {
         if ((cfg.output_transport || 'srt') === 'srt') {
             rows.push(['SRT Port', `${cfg.srt_port}`]);
             rows.push(['Wait for Client', cfg.srt_wait_for_connection ? 'Enabled' : 'Disabled']);
-        } else if (cfg.output_transport === 'rtmp') {
+        } else if (cfg.output_transport === 'rtmp' || cfg.output_transport === 'rtmp_streambox') {
             rows.push(['RTMP URL', cfg.rtmp_url || '-']);
         } else if (cfg.output_transport === 'rtsp') {
             rows.push(['RTSP URL', cfg.rtsp_url || '-']);
@@ -675,7 +675,8 @@ function formatOutputCodec(codec) {
 
 function formatOutputTransport(transport) {
     switch (transport) {
-        case 'rtmp': return 'RTMP';
+        case 'rtmp': return 'RTMP (legacy)';
+        case 'rtmp_streambox': return 'RTMP (StreamBox, experimental)';
         case 'rtsp': return 'RTSP';
         case 'srt':
         default: return 'SRT';

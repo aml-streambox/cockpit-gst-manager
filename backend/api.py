@@ -514,7 +514,7 @@ if DBUS_LIBRARY == "dbus_next":
                     - lossless_enable: bool
                     - fixed_qp_value: int
                     - audio_source: str ("hdmi_rx" or "line_in")
-                    - output_transport: str ("srt", "rtmp", "rtsp")
+                    - output_transport: str ("srt", "rtmp", "rtmp_streambox", "rtsp")
                     - srt_port: int
                     - srt_wait_for_connection: bool
                     - rtmp_url: str

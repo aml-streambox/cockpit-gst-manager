@@ -7,7 +7,7 @@
  * - Single auto instance (creates/replaces)
  * - HDMI TX state monitoring
  * - Pipeline preview with real-time updates
- * - Selectable SRT / RTMP / RTSP streaming output
+ * - Selectable SRT / RTMP / RTMP StreamBox / RTSP streaming output
  * - Optional MPEG-TS recording
  */
 
@@ -695,12 +695,18 @@ class AutoConfigurator {
         const codecHint = document.getElementById('auto-hdr-status');
         const srtGroup = document.getElementById('auto-srt-group');
         const rtmpGroup = document.getElementById('auto-rtmp-group');
+        const rtmpHint = document.getElementById('auto-rtmp-hint');
         const rtspGroup = document.getElementById('auto-rtsp-group');
         const recordingToggle = document.getElementById('auto-recording-enabled');
         const recordingPathGroup = document.getElementById('auto-recording-path-group');
 
         if (srtGroup) srtGroup.style.display = transport === 'srt' ? 'block' : 'none';
-        if (rtmpGroup) rtmpGroup.style.display = transport === 'rtmp' ? 'block' : 'none';
+        if (rtmpGroup) rtmpGroup.style.display = (transport === 'rtmp' || transport === 'rtmp_streambox') ? 'block' : 'none';
+        if (rtmpHint) {
+            rtmpHint.textContent = transport === 'rtmp_streambox'
+                ? 'Experimental StreamBox RTMP supports H.264 and H.265/HDR through sflvmux + srtmpsink.'
+                : 'RTMP legacy requires H.264 output.';
+        }
         if (rtspGroup) rtspGroup.style.display = transport === 'rtsp' ? 'block' : 'none';
 
         if (codecEl) {
